@@ -1,7 +1,7 @@
-use crate::delegate::{Shared, TabDelegate, cancel};
+use crate::delegate::{PendingPerm, Shared, TabDelegate, cancel};
 use crate::memory::{self, Line, ServoMemory};
 use browser_core::{Clock, TabId, TabState};
-use browser_engine::{Engine, EngineCaps, EngineEvent, TabMemorySample};
+use browser_engine::{Engine, EngineCaps, EngineEvent, FaviconImage, TabMemorySample};
 use browser_memory::TrimLevel;
 use browser_network::{ControllerConfig, NetworkHub, NetworkPolicy};
 use browser_settings::BackgroundMode;
@@ -25,6 +25,8 @@ pub struct ServoEngineConfig {
     pub policy: NetworkPolicy,
     pub controller: ControllerConfig,
     pub memory_report_interval: Duration,
+    /// Persistent (or in-memory, for private browsing) permission decisions.
+    pub permissions: Rc<RefCell<browser_security::PermissionStore>>,
 }
 
 impl ServoEngineConfig {
@@ -36,8 +38,18 @@ impl ServoEngineConfig {
             policy: NetworkPolicy::default(),
             controller: ControllerConfig::default(),
             memory_report_interval: Duration::from_secs(5),
+            permissions: Rc::new(RefCell::new(browser_security::PermissionStore::in_memory())),
         }
     }
+}
+
+/// A permission request waiting for a user decision.
+#[derive(Clone, Debug)]
+pub struct PermissionPrompt {
+    pub id: u64,
+    pub tab: TabId,
+    pub origin: String,
+    pub feature: String,
 }
 
 pub struct ServoEngine {
@@ -61,6 +73,9 @@ impl ServoEngine {
             adopted: RefCell::new(Vec::new()),
             expected: RefCell::new(HashMap::new()),
             paused: RefCell::new(HashSet::new()),
+            permissions: cfg.permissions,
+            pending_perms: RefCell::new(Vec::new()),
+            next_perm_id: Cell::new(0),
             ctx,
             hidpi: Cell::new(cfg.hidpi),
             allow_popup: cfg.allow_popup,
@@ -112,6 +127,30 @@ impl ServoEngine {
 
     pub fn network_log(&self, tab: TabId) -> Vec<browser_network::RequestRecord> {
         self.shared.hub.borrow().monitor(tab).map(|m| m.recent().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Permission requests waiting for the user.
+    pub fn pending_permissions(&self) -> Vec<PermissionPrompt> {
+        self.shared
+            .pending_perms
+            .borrow()
+            .iter()
+            .map(|p| PermissionPrompt { id: p.id, tab: p.tab, origin: p.origin.clone(), feature: p.label.clone() })
+            .collect()
+    }
+
+    /// Answer a pending request. `remember` stores the decision for the origin.
+    pub fn answer_permission(&self, id: u64, allow: bool, remember: bool) {
+        let taken: Option<PendingPerm> = {
+            let mut v = self.shared.pending_perms.borrow_mut();
+            v.iter().position(|p| p.id == id).map(|i| v.remove(i))
+        };
+        let Some(p) = taken else { return };
+        if remember {
+            let d = if allow { browser_security::Decision::Allow } else { browser_security::Decision::Deny };
+            let _ = self.shared.permissions.borrow_mut().set(&p.origin, p.feature, d);
+        }
+        if allow { p.request.allow() } else { p.request.deny() }
     }
 
     pub fn servo_memory(&self) -> &ServoMemory {
@@ -225,6 +264,7 @@ impl Engine for ServoEngine {
         // Dropping the last handle sends CloseWebView to the constellation and
         // removes the WebView from the painter: this is what frees renderer memory.
         self.views.remove(&tab);
+        self.shared.pending_perms.borrow_mut().retain(|p| p.tab != tab);
         self.shared.expected.borrow_mut().remove(&tab);
         let outcomes = self.shared.hub.borrow_mut().remove_tab(tab);
         self.shared.settle(outcomes);
@@ -309,6 +349,23 @@ impl Engine for ServoEngine {
         let url = self.views.get(&tab)?.url()?;
         let bytes = self.memory.by_url.get(url.as_str()).copied()?;
         Some(TabMemorySample { private: browser_core::ByteSize(bytes), shared: browser_core::ByteSize(0) })
+    }
+
+    fn favicon(&mut self, tab: TabId) -> Option<FaviconImage> {
+        use servo::PixelFormat as F;
+        let wv = self.views.get(&tab)?;
+        let img = wv.favicon()?;
+        let (w, h) = (img.width, img.height);
+        let px = (w as usize).checked_mul(h as usize)?;
+        let d = img.data();
+        let rgba = match img.format {
+            F::RGBA8 => d.get(..px * 4)?.to_vec(),
+            F::BGRA8 => d.get(..px * 4)?.chunks_exact(4).flat_map(|c| [c[2], c[1], c[0], c[3]]).collect(),
+            F::RGB8 => d.get(..px * 3)?.chunks_exact(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+            F::K8 => d.get(..px)?.iter().flat_map(|&v| [v, v, v, 255]).collect(),
+            F::KA8 => d.get(..px * 2)?.chunks_exact(2).flat_map(|c| [c[0], c[0], c[0], c[1]]).collect(),
+        };
+        Some(FaviconImage { width: w, height: h, rgba })
     }
 
     fn request_page_state(&mut self, tab: TabId) {

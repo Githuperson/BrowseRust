@@ -11,4 +11,4 @@ pub mod tab;
 
 pub use lifecycle::{LifecycleCommand, TabLifecycleManager};
 pub use strip::{Group, TabStrip, Workspace};
-pub use tab::Tab;
+pub use tab::{Tab, TabIcon};

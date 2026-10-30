@@ -843,6 +843,7 @@ dependencies = [
  "browser-session",
  "browser-settings",
  "browser-storage",
+ "browser-tabs",
  "egui",
  "egui-winit",
  "egui_glow",

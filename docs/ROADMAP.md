@@ -9,7 +9,8 @@
 Decision rule: use a proven dependency for security-sensitive or solved problems (SQLite, OS keyring, egui/winit for UI); write our own only for the memory, lifecycle and network-control core. `rusqlite` is pinned to 0.38 because Servo links its own `libsqlite3-sys`.
 
 ## Known shell gaps
-No favicon textures (a state dot is shown instead), no new-tab page (opens about:blank), tab groups exist in the model but have no UI, no permission prompt UI (requests are denied), no downloads UI, no cursor-icon forwarding, no IME, clipboard shortcuts are not forwarded to pages, mute is a flag only (Servo exposes no per-tab mute), extensions toolbar absent. Drag-reorder is implemented but untested.
+Done since first shell: favicons, native new-tab page (most visited + bookmarks), permission bar, tab-group UI (context menu + coloured bar), cursor icons, clipboard actions (Ctrl+C/X/V forwarded as editing actions; untested with a real selection), multiprocess default.
+Still missing: downloads (engine has no API), certificate error pages, find-in-page, page zoom, printing, PDF viewer, devtools, IME, extensions, tab-group collapse/rename, per-tab mute (flag only), drag-reorder untested, import/export UI for bookmarks (storage supports it), password manager UI/autofill, macOS/Windows verification.
 
 ## epaint patch
 `vendor/epaint` carries a 2-line fix (see its BROWSERUST_PATCH.md). Without it egui text panics on any multi-core machine because Servo's feature unification enables vello_cpu multithreading.

@@ -4,12 +4,21 @@ use std::sync::Arc;
 use std::time::Instant;
 use url::Url;
 
+/// Favicon pixels (RGBA8). The buffer is shared between tabs of the same site
+/// through the browser's content-addressed blob store.
+#[derive(Clone, Debug)]
+pub struct TabIcon {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<[u8]>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Tab {
     pub id: TabId,
     pub url: Option<Url>,
     pub title: String,
-    pub favicon: Option<Arc<[u8]>>,
+    pub favicon: Option<TabIcon>,
     pub state: TabState,
     pub pinned: bool,
     pub group: Option<GroupId>,

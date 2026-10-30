@@ -1,12 +1,13 @@
 use crate::omnibox::{Resolved, resolve_input};
 use browser_core::{ByteSize, Clock, TabId, TabState};
 use browser_engine::{Engine, EngineEvent, LoadState};
+use browser_memory::cache::BlobStore;
 use browser_memory::probe::{MemoryProbe, ProcessMemory};
 use browser_memory::{Category, GovernorConfig, MemoryBudget, MemoryGovernor, MemoryLedger, PressureLevel, PressureTracker, Snapshot, SystemMemory};
 use browser_security::{NavVerdict, PopupBlocker, check_navigation};
 use browser_session::{SavedTab, SessionStore};
 use browser_settings::{BackgroundMode, Settings};
-use browser_tabs::{LifecycleCommand, TabLifecycleManager};
+use browser_tabs::{LifecycleCommand, TabIcon, TabLifecycleManager};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -39,6 +40,8 @@ pub struct Browser<E: Engine> {
     last_sample: Option<Instant>,
     pub sample_every: Duration,
     pending_scroll: HashMap<TabId, (f32, f32)>,
+    /// Deduplicates favicon pixels across tabs.
+    blobs: BlobStore,
     report: Option<MemoryReport>,
 }
 
@@ -57,6 +60,7 @@ impl<E: Engine> Browser<E> {
             last_sample: None,
             sample_every: Duration::from_secs(2),
             pending_scroll: HashMap::new(),
+            blobs: BlobStore::default(),
             report: None,
         }
     }
@@ -84,6 +88,7 @@ impl<E: Engine> Browser<E> {
         self.ledger.forget(id);
         let cmds = self.tabs.close(id, &self.settings);
         self.execute(cmds);
+        self.blobs.sweep();
     }
 
     pub fn reopen_closed_tab(&mut self) {
@@ -209,7 +214,18 @@ impl<E: Engine> Browser<E> {
                 let cmds = self.tabs.adopt(tab, true, &self.settings);
                 self.execute(cmds);
             }
-            EngineEvent::FaviconChanged(_) | EngineEvent::FrameReady(_) | EngineEvent::FullscreenChanged(..) | EngineEvent::Crashed(..) => {}
+            EngineEvent::FaviconChanged(tab) => {
+                if let Some(icon) = self.engine.favicon(tab) {
+                    // Cap size: a hostile page must not make us hold a huge bitmap.
+                    if icon.width > 0 && icon.height > 0 && icon.width <= 256 && icon.height <= 256 && icon.rgba.len() == (icon.width * icon.height * 4) as usize {
+                        let rgba = self.blobs.put(&icon.rgba);
+                        if let Some(t) = self.tabs.strip.tab_mut(tab) {
+                            t.favicon = Some(TabIcon { width: icon.width, height: icon.height, rgba });
+                        }
+                    }
+                }
+            }
+            EngineEvent::FrameReady(_) | EngineEvent::FullscreenChanged(..) | EngineEvent::Crashed(..) => {}
         }
     }
 
@@ -388,6 +404,26 @@ mod tests {
         f.b.engine.events.push(EngineEvent::Load(id, LoadState::Complete));
         f.b.pump_events();
         id
+    }
+
+    #[test]
+    fn favicons_are_deduplicated_across_tabs_and_size_capped() {
+        let mut f = fx();
+        let a = open_loaded(&mut f, "https://a.test/1", true);
+        let b = open_loaded(&mut f, "https://a.test/2", true);
+        let icon = browser_engine::FaviconImage { width: 2, height: 2, rgba: vec![7; 16] };
+        f.b.engine.favicons.insert(a, icon.clone());
+        f.b.engine.favicons.insert(b, icon);
+        f.b.engine.events.push(EngineEvent::FaviconChanged(a));
+        f.b.engine.events.push(EngineEvent::FaviconChanged(b));
+        f.b.pump_events();
+        let (ia, ib) = (f.b.tabs.strip.tab(a).unwrap().favicon.clone().unwrap(), f.b.tabs.strip.tab(b).unwrap().favicon.clone().unwrap());
+        assert!(Arc::ptr_eq(&ia.rgba, &ib.rgba), "identical favicons share one buffer");
+        let c = open_loaded(&mut f, "https://c.test/", true);
+        f.b.engine.favicons.insert(c, browser_engine::FaviconImage { width: 4096, height: 4096, rgba: vec![0; 4096 * 4096 * 4] });
+        f.b.engine.events.push(EngineEvent::FaviconChanged(c));
+        f.b.pump_events();
+        assert!(f.b.tabs.strip.tab(c).unwrap().favicon.is_none(), "oversized favicon rejected");
     }
 
     #[test]

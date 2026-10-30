@@ -98,6 +98,11 @@ impl Store {
         Ok(v)
     }
 
+    /// Most-visited pages, for the new-tab page.
+    pub fn top_sites(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
+        self.query_history("SELECT url,title,visits,last_visit FROM history ORDER BY visits DESC, last_visit DESC LIMIT ?1", params![limit as i64])
+    }
+
     pub fn clear_history(&self) -> Result<()> {
         self.db.execute("DELETE FROM history", [])?;
         Ok(())
@@ -213,6 +218,18 @@ mod tests {
         assert_eq!(r.len(), 2);
         assert_eq!(s.suggest("%", now, 5).unwrap().len(), 1, "% is literal, not a wildcard");
         assert!(s.suggest("  ", now, 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn top_sites_are_ordered_by_visits() {
+        let s = Store::in_memory().unwrap();
+        s.record_visit("https://few.test/", "few", 10).unwrap();
+        for _ in 0..4 {
+            s.record_visit("https://many.test/", "many", 5).unwrap();
+        }
+        let t = s.top_sites(5).unwrap();
+        assert_eq!(t[0].url, "https://many.test/");
+        assert_eq!(s.top_sites(1).unwrap().len(), 1);
     }
 
     #[test]

@@ -37,6 +37,8 @@ struct Args {
     url: Option<String>,
     profile: Option<PathBuf>,
     private: bool,
+    single_process: bool,
+    sandbox: bool,
     screenshot: Option<PathBuf>,
     exit_after: Option<f32>,
 }
@@ -48,6 +50,8 @@ fn parse_args() -> Args {
         match arg.as_str() {
             "--profile" => a.profile = it.next().map(PathBuf::from),
             "--private" => a.private = true,
+            "--single-process" => a.single_process = true,
+            "--sandbox" => a.sandbox = true,
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
             "--exit-after" => a.exit_after = it.next().and_then(|s| s.parse().ok()),
             other if !other.starts_with("--") => a.url = Some(other.to_string()),
@@ -127,7 +131,20 @@ impl App {
         );
         window_ctx.make_current().ok();
         let offscreen = Rc::new(window_ctx.offscreen_context(size));
-        let servo = ServoBuilder::default().event_loop_waker(Box::new(Waker(self.proxy.clone()))).build();
+        let mut opts = servo::Opts::default();
+        // Site processes are the default: crash containment and OS-level isolation of
+        // untrusted content. `--single-process` exists for debugging only.
+        opts.multiprocess = !args.single_process;
+        opts.sandbox = args.sandbox && opts.multiprocess;
+        opts.temporary_storage = args.private;
+        if !args.private {
+            opts.config_dir = Some(dir.join("servo"));
+        }
+        let servo = ServoBuilder::default()
+            .opts(opts)
+            .preferences(servo_integration::browser_preferences())
+            .event_loop_waker(Box::new(Waker(self.proxy.clone())))
+            .build();
 
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let popups = Rc::new(RefCell::new(PopupBlocker::new(clock.clone())));
@@ -140,6 +157,12 @@ impl App {
                 let _ = proxy.send_event(());
             }),
         );
+        let mut cfg = cfg;
+        cfg.permissions = Rc::new(RefCell::new(if args.private {
+            browser_security::PermissionStore::in_memory()
+        } else {
+            browser_security::PermissionStore::open(dir.join("permissions.json"))
+        }));
         let engine = ServoEngine::new(servo, offscreen.clone() as Rc<dyn RenderingContext>, clock.clone(), cfg);
 
         let settings_path = (!args.private).then(|| dir.join("settings.json"));
@@ -352,6 +375,11 @@ impl Running {
             }
         }
         self.window_ctx.present();
+        let cursor = match (self.in_content(), self.browser.tabs.strip.selected.and_then(|t| self.browser.engine.webview(t))) {
+            (Some(_), Some(wv)) => input::cursor_icon(wv.cursor()),
+            _ => winit::window::CursorIcon::Default,
+        };
+        self.window.set_cursor(cursor);
 
         let animating = self.browser.tabs.strip.selected.and_then(|t| self.browser.engine.webview(t)).is_some_and(|w| w.animating());
         let ui_delay = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay).unwrap_or(Duration::from_secs(1));
@@ -433,6 +461,18 @@ impl ApplicationHandler<()> for App {
                     return;
                 }
                 let typing_in_ui = s.egui_ctx.egui_wants_keyboard_input();
+                if !typing_in_ui && ke.state == ElementState::Pressed && (s.mods.control_key() || s.mods.super_key()) {
+                    let act = match &ke.logical_key {
+                        Key::Character(c) if c.eq_ignore_ascii_case("c") => Some(servo::ClipboardAction::Copy),
+                        Key::Character(c) if c.eq_ignore_ascii_case("x") => Some(servo::ClipboardAction::Cut),
+                        Key::Character(c) if c.eq_ignore_ascii_case("v") => Some(servo::ClipboardAction::Paste),
+                        _ => None,
+                    };
+                    if let (Some(a), Some(wv)) = (act, s.browser.tabs.strip.selected.and_then(|t| s.browser.engine.webview(t))) {
+                        wv.notify_input_event(servo::InputEvent::EditingAction(a));
+                        return;
+                    }
+                }
                 if !typing_in_ui {
                     if let (Some(tab), Some(ev)) = (s.browser.tabs.strip.selected, input::keyboard(ke, s.mods)) {
                         if ke.state == ElementState::Pressed {
@@ -451,6 +491,12 @@ impl ApplicationHandler<()> for App {
 
 fn main() {
     rustls::crypto::aws_lc_rs::default_provider().install_default().ok();
+    // Content-process entry point: Servo re-executes this binary for each site process.
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.len() >= 3 && argv[1] == "--content-process" {
+        servo::run_content_process(argv[2].clone());
+        return;
+    }
     let event_loop = EventLoop::<()>::with_user_event().build().expect("event loop");
     let mut app = App { args: parse_args(), proxy: event_loop.create_proxy(), state: None };
     event_loop.run_app(&mut app).expect("run");

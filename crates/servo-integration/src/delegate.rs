@@ -13,7 +13,7 @@ use crate::convert;
 use browser_core::TabId;
 use browser_engine::{EngineEvent, LoadState};
 use browser_network::{NetworkHub, Outcome};
-use browser_security::{NavVerdict, check_navigation};
+use browser_security::{Decision, Feature, NavVerdict, PermissionStore, check_navigation};
 use servo::{
     CreateNewWebViewRequest, LoadStatus, NavigationRequest, PermissionRequest, RenderingContext, WebResourceLoad, WebResourceResponse,
     WebView, WebViewDelegate,
@@ -31,6 +31,10 @@ pub struct Shared {
     /// The one URL the browser itself asked each tab to load (needed so a typed
     /// `file:` URL is allowed while a page-initiated one is not).
     pub expected: RefCell<HashMap<TabId, Url>>,
+    pub permissions: Rc<RefCell<PermissionStore>>,
+    /// Permission requests waiting for the user (`Decision::Ask`).
+    pub pending_perms: RefCell<Vec<PendingPerm>>,
+    pub next_perm_id: Cell<u64>,
     /// Tabs whose WebSocket/SSE delivery is currently paused.
     pub paused: RefCell<HashSet<TabId>>,
     pub ctx: Rc<dyn RenderingContext>,
@@ -59,6 +63,29 @@ impl Shared {
 pub fn cancel(h: WebResourceLoad) {
     let url = h.request.url.clone();
     h.intercept(WebResourceResponse::new(url)).cancel();
+}
+
+pub struct PendingPerm {
+    pub id: u64,
+    pub tab: TabId,
+    pub origin: String,
+    pub feature: Feature,
+    pub label: String,
+    pub request: PermissionRequest,
+}
+
+pub fn map_feature(f: servo::PermissionFeature) -> Feature {
+    use servo::PermissionFeature as P;
+    match f {
+        P::Geolocation => Feature::Geolocation,
+        P::Notifications | P::Push => Feature::Notifications,
+        P::Camera => Feature::Camera,
+        P::Microphone => Feature::Microphone,
+        P::Midi => Feature::Midi,
+        P::Bluetooth => Feature::Bluetooth,
+        P::PersistentStorage => Feature::PersistentStorage,
+        _ => Feature::Other,
+    }
 }
 
 pub struct TabDelegate {
@@ -147,11 +174,23 @@ impl WebViewDelegate for TabDelegate {
         self.shared.push(EngineEvent::TabOpenedByPage { tab: new_tab, from: self.tab });
     }
 
-    fn request_permission(&self, _wv: WebView, req: PermissionRequest) {
-        // Secure default: nothing is granted until a permission prompt exists.
-        // Decision::Ask is treated as Deny (see docs/SECURITY.md).
-        tracing::info!(tab = %self.tab, feature = ?req.feature(), "permission denied by default");
-        req.deny();
+    fn request_permission(&self, wv: WebView, req: PermissionRequest) {
+        let feature = map_feature(req.feature());
+        let origin = wv.url().map(|u| u.origin().ascii_serialization()).unwrap_or_default();
+        // Opaque/unknown origins can never hold a stored grant.
+        let decision = if origin.is_empty() || origin == "null" { Decision::Deny } else { self.shared.permissions.borrow().get(&origin, feature) };
+        match decision {
+            Decision::Allow => req.allow(),
+            Decision::Deny => req.deny(),
+            // No stored answer: hold the request (the page's promise stays pending)
+            // until the user decides in the shell's permission bar.
+            Decision::Ask => {
+                let id = self.shared.next_perm_id.get() + 1;
+                self.shared.next_perm_id.set(id);
+                let label = format!("{:?}", req.feature());
+                self.shared.pending_perms.borrow_mut().push(PendingPerm { id, tab: self.tab, origin, feature, label, request: req });
+            }
+        }
     }
 
     fn load_web_resource(&self, _wv: WebView, load: WebResourceLoad) {

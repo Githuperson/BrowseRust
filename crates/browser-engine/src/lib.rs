@@ -60,6 +60,14 @@ pub enum EngineEvent {
     AudibleChanged(TabId, bool),
 }
 
+/// A decoded favicon, RGBA8.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaviconImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TabMemorySample {
     pub private: ByteSize,
@@ -97,6 +105,8 @@ pub trait Engine {
 
     /// Ask the page for its scroll position and form-dirty flag; the answer
     /// arrives later as [`EngineEvent::PageState`].
+    /// Current favicon of the tab, if the page has one.
+    fn favicon(&mut self, tab: TabId) -> Option<FaviconImage>;
     fn request_page_state(&mut self, tab: TabId);
     /// Scroll a freshly restored (previously discarded) tab back to where it was.
     fn restore_scroll(&mut self, tab: TabId, x: f32, y: f32);

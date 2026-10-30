@@ -29,6 +29,7 @@ pub struct MockEngine {
     pub calls: Vec<Call>,
     pub events: Vec<EngineEvent>,
     pub memory: std::collections::HashMap<TabId, TabMemorySample>,
+    pub favicons: std::collections::HashMap<TabId, crate::FaviconImage>,
 }
 
 impl MockEngine {
@@ -87,6 +88,9 @@ impl Engine for MockEngine {
     }
     fn tab_memory(&mut self, tab: TabId) -> Option<TabMemorySample> {
         self.memory.get(&tab).copied()
+    }
+    fn favicon(&mut self, tab: TabId) -> Option<crate::FaviconImage> {
+        self.favicons.get(&tab).cloned()
     }
     fn request_page_state(&mut self, tab: TabId) {
         self.calls.push(Call::RequestPageState(tab));

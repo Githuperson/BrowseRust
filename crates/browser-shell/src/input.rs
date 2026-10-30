@@ -77,3 +77,44 @@ pub fn wheel(d: MouseScrollDelta, x: f32, y: f32) -> InputEvent {
     };
     InputEvent::Wheel(WheelEvent::new(WheelDelta { x: dx, y: dy, z: 0.0, mode }, WebViewPoint::Device(DevicePoint::new(x, y))))
 }
+
+pub fn cursor_icon(c: servo::Cursor) -> winit::window::CursorIcon {
+    use servo::Cursor as C;
+    use winit::window::CursorIcon as W;
+    match c {
+        C::None | C::Default => W::Default,
+        C::Pointer => W::Pointer,
+        C::ContextMenu => W::ContextMenu,
+        C::Help => W::Help,
+        C::Progress => W::Progress,
+        C::Wait => W::Wait,
+        C::Cell => W::Cell,
+        C::Crosshair => W::Crosshair,
+        C::Text => W::Text,
+        C::VerticalText => W::VerticalText,
+        C::Alias => W::Alias,
+        C::Copy => W::Copy,
+        C::Move => W::Move,
+        C::NoDrop => W::NoDrop,
+        C::NotAllowed => W::NotAllowed,
+        C::Grab => W::Grab,
+        C::Grabbing => W::Grabbing,
+        C::EResize => W::EResize,
+        C::NResize => W::NResize,
+        C::NeResize => W::NeResize,
+        C::NwResize => W::NwResize,
+        C::SResize => W::SResize,
+        C::SeResize => W::SeResize,
+        C::SwResize => W::SwResize,
+        C::WResize => W::WResize,
+        C::EwResize => W::EwResize,
+        C::NsResize => W::NsResize,
+        C::NeswResize => W::NeswResize,
+        C::NwseResize => W::NwseResize,
+        C::ColResize => W::ColResize,
+        C::RowResize => W::RowResize,
+        C::AllScroll => W::AllScroll,
+        C::ZoomIn => W::ZoomIn,
+        C::ZoomOut => W::ZoomOut,
+    }
+}

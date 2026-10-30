@@ -1,7 +1,9 @@
 //! The native interface, drawn with egui (immediate mode, no web UI).
 
 use browser_app::Browser;
-use browser_core::{TabId, TabState};
+use browser_core::{GroupId, TabId, TabState};
+use browser_tabs::TabIcon;
+use std::collections::{HashMap, HashSet};
 use browser_security::{SecurityLevel, security_level};
 use browser_settings::{BackgroundMode, Density, SiteMode, SiteSettings, Theme};
 use browser_storage::Store;
@@ -22,6 +24,10 @@ pub struct UiState {
     last_url: Option<String>,
     tab_rects: Vec<(TabId, Rect)>,
     new_workspace: String,
+    ntp_text: String,
+    /// Favicon textures keyed by the address of the shared pixel buffer.
+    icons: HashMap<usize, egui::TextureHandle>,
+    icons_used: HashSet<usize>,
 }
 
 pub fn accent(b: &Browser<ServoEngine>) -> Color32 {
@@ -54,6 +60,18 @@ pub fn apply_theme(ctx: &egui::Context, b: &Browser<ServoEngine>) {
     });
 }
 
+fn icon_texture(ctx: &egui::Context, st: &mut UiState, icon: &TabIcon) -> egui::TextureId {
+    let key = std::sync::Arc::as_ptr(&icon.rgba) as *const u8 as usize;
+    st.icons_used.insert(key);
+    st.icons
+        .entry(key)
+        .or_insert_with(|| {
+            let img = egui::ColorImage::from_rgba_unmultiplied([icon.width as usize, icon.height as usize], &icon.rgba);
+            ctx.load_texture(format!("favicon-{key}"), img, egui::TextureOptions::LINEAR)
+        })
+        .id()
+}
+
 fn density_px(d: Density) -> (f32, f32) {
     // (tab strip height, toolbar height)
     match d {
@@ -66,6 +84,7 @@ fn density_px(d: Density) -> (f32, f32) {
 /// Draw the whole UI. `paint_content` is called with the rectangle reserved for
 /// web content so the shell can attach the Servo paint callback.
 pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, store: &Store, now: i64, paint_content: impl FnOnce(&egui::Painter, Rect)) -> Rect {
+    st.icons_used.clear();
     let acc = accent(b);
     let (tab_h, bar_h) = density_px(b.settings.appearance.density);
     let selected = b.tabs.strip.selected;
@@ -121,6 +140,26 @@ pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, s
         });
     });
 
+    // ---------------------------------------------------- permission prompts
+    if let Some(prompt) = selected.and_then(|t| b.engine.pending_permissions().into_iter().find(|p| p.tab == t)) {
+        egui::Panel::top("permission").exact_size(34.0).show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.label(egui::RichText::new(format!("{} wants to use: {}", prompt.origin, prompt.feature)).strong());
+                let remember = ui.memory(|m| m.data.get_temp::<bool>(egui::Id::new("perm_remember"))).unwrap_or(true);
+                let mut r = remember;
+                if ui.checkbox(&mut r, "Remember").changed() {
+                    ui.memory_mut(|m| m.data.insert_temp(egui::Id::new("perm_remember"), r));
+                }
+                if ui.button("Allow").clicked() {
+                    b.engine.answer_permission(prompt.id, true, r);
+                }
+                if ui.button("Block").clicked() {
+                    b.engine.answer_permission(prompt.id, false, r);
+                }
+            });
+        });
+    }
+
     // -------------------------------------------------------------- status
     egui::Panel::bottom("status").exact_size(22.0).show(ui, |ui| {
         ui.horizontal_centered(|ui| {
@@ -143,12 +182,76 @@ pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, s
 
     // ------------------------------------------------------------- content
     let mut content = Rect::NOTHING;
+    let on_ntp = selected.and_then(|t| b.tabs.strip.tab(t)).is_some_and(|t| t.url.as_ref().is_none_or(|u| u.as_str() == "about:blank"));
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
         let (rect, _resp) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         content = rect;
-        paint_content(ui.painter(), rect);
+        if on_ntp {
+            ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
+            new_tab_page(ui, rect, st, b, store);
+        } else {
+            paint_content(ui.painter(), rect);
+        }
     });
+    // Free textures of favicons no tab shows any more.
+    let used = st.icons_used.clone();
+    st.icons.retain(|k, _| used.contains(k));
     content
+}
+
+/// Native new-tab page: search box, most-visited sites and bookmarks.
+fn new_tab_page(ui: &mut egui::Ui, rect: Rect, st: &mut UiState, b: &mut Browser<ServoEngine>, store: &Store) {
+    let w = 660.0_f32.min(rect.width() - 48.0).max(200.0);
+    let area = Rect::from_min_size(egui::pos2(rect.center().x - w / 2.0, rect.min.y + 40.0), Vec2::new(w, (rect.height() - 60.0).max(50.0)));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
+    let ui = &mut child;
+    let acc = accent(b);
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new("BrowseRust").size(34.0).strong());
+        ui.add_space(14.0);
+        let resp = ui.add(egui::TextEdit::singleline(&mut st.ntp_text).hint_text("Search or enter address").desired_width(w * 0.85).margin(egui::Margin::symmetric(14, 10)));
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let q = st.ntp_text.clone();
+            if let Err(e) = b.navigate_input(&q) {
+                st.status = format!("Blocked: {e}");
+            }
+            st.ntp_text.clear();
+        }
+    });
+    ui.add_space(26.0);
+    let mut go: Option<String> = None;
+    let tiles = |ui: &mut egui::Ui, title: &str, items: Vec<(String, String)>, go: &mut Option<String>| {
+        if items.is_empty() {
+            return;
+        }
+        ui.label(egui::RichText::new(title).strong());
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            for (label, url) in items {
+                let host = Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default();
+                let text = if label.is_empty() { host.clone() } else { label };
+                let (r, resp) = ui.allocate_exact_size(Vec2::new(150.0, 58.0), Sense::click());
+                let fill = if resp.hovered() { ui.visuals().widgets.hovered.bg_fill } else { ui.visuals().widgets.inactive.bg_fill };
+                ui.painter().rect_filled(r, CornerRadius::same(10), fill);
+                let c = r.left_center() + Vec2::new(24.0, 0.0);
+                ui.painter().circle_filled(c, 14.0, acc.gamma_multiply(0.8));
+                ui.painter().text(c, Align2::CENTER_CENTER, text.chars().next().unwrap_or('?').to_uppercase().to_string(), FontId::proportional(14.0), Color32::WHITE);
+                let tr = Rect::from_min_max(r.left_top() + Vec2::new(46.0, 0.0), r.right_bottom() - Vec2::new(6.0, 0.0));
+                ui.painter().with_clip_rect(tr).text(tr.left_center(), Align2::LEFT_CENTER, text, FontId::proportional(13.0), ui.visuals().text_color());
+                if resp.clicked() {
+                    *go = Some(url);
+                }
+            }
+        });
+        ui.add_space(18.0);
+    };
+    let top: Vec<_> = store.top_sites(8).unwrap_or_default().into_iter().map(|e| (e.title, e.url)).collect();
+    tiles(ui, "Most visited", top, &mut go);
+    let marks: Vec<_> = store.bookmarks().unwrap_or_default().into_iter().take(16).map(|m| (m.title, m.url)).collect();
+    tiles(ui, "Bookmarks", marks, &mut go);
+    if let Some(u) = go {
+        let _ = b.navigate_input(&u);
+    }
 }
 
 fn workspace_menu(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>) {
@@ -184,11 +287,11 @@ fn workspace_menu(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngi
 }
 
 fn tab_strip(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, h: f32, acc: Color32) {
-    let tabs: Vec<(TabId, String, TabState, bool, bool, bool, bool)> = b
+    let tabs: Vec<(TabId, String, TabState, bool, bool, bool, bool, Option<TabIcon>, Option<GroupId>)> = b
         .tabs
         .strip
         .visible()
-        .map(|t| (t.id, t.display_title().to_string(), t.state, t.pinned, t.loading, t.muted, t.audible))
+        .map(|t| (t.id, t.display_title().to_string(), t.state, t.pinned, t.loading, t.muted, t.audible, t.favicon.clone(), t.group))
         .collect();
     let n = tabs.len().max(1) as f32;
     let pinned_n = tabs.iter().filter(|t| t.3).count() as f32;
@@ -199,7 +302,8 @@ fn tab_strip(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, 
     let dark = ui.visuals().dark_mode;
     let mut action: Option<TabAction> = None;
     ui.spacing_mut().item_spacing.x = 4.0;
-    for (id, title, state, pinned, loading, muted, audible) in tabs {
+    let groups: Vec<(GroupId, String, [u8; 3])> = b.tabs.strip.groups.iter().map(|g| (g.id, g.name.clone(), g.color)).collect();
+    for (id, title, state, pinned, loading, muted, audible, icon, group) in tabs {
         let size = Vec2::new(if pinned { 40.0 } else { w }, h);
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
         st.tab_rects.push((id, rect));
@@ -217,6 +321,9 @@ fn tab_strip(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, 
         if is_sel {
             p.rect_stroke(rect, CornerRadius { nw: 10, ne: 10, sw: 3, se: 3 }, Stroke::new(1.5, acc), StrokeKind::Inside);
         }
+        if let Some((_, _, c)) = group.and_then(|g| groups.iter().find(|x| x.0 == g)) {
+            ui.painter().rect_filled(Rect::from_min_size(rect.left_top(), Vec2::new(rect.width(), 3.0)), CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, Color32::from_rgb(c[0], c[1], c[2]));
+        }
         // State indicator dot: the "unobtrusive" lifecycle indicator.
         let dot_c = rect.left_center() + Vec2::new(12.0, 0.0);
         let col = state_color(state, acc);
@@ -225,8 +332,16 @@ fn tab_strip(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, 
         } else {
             p.circle_filled(dot_c, 4.0, col);
         }
+        let icon_x = if pinned { 22.0 } else { 22.0 };
+        let mut text_off = 24.0;
+        if let Some(ic) = &icon {
+            let tid = icon_texture(ui.ctx(), st, ic);
+            let ir = Rect::from_min_size(rect.left_center() + Vec2::new(icon_x, -8.0), Vec2::splat(16.0));
+            ui.painter().image(tid, ir, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            text_off = 44.0;
+        }
         if !pinned {
-            let text_rect = Rect::from_min_max(rect.left_top() + Vec2::new(24.0, 0.0), rect.right_bottom() - Vec2::new(24.0, 0.0));
+            let text_rect = Rect::from_min_max(rect.left_top() + Vec2::new(text_off, 0.0), rect.right_bottom() - Vec2::new(24.0, 0.0));
             let color = if is_sel { ui.visuals().strong_text_color() } else { ui.visuals().text_color() };
             let mut label = title.clone();
             if audible && !muted {
@@ -278,6 +393,22 @@ fn tab_strip(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, 
                 action = Some(TabAction::Mute(id, !muted));
                 ui.close();
             }
+            ui.menu_button("Group", |ui| {
+                if ui.button("New group").clicked() {
+                    action = Some(TabAction::NewGroup(id));
+                    ui.close();
+                }
+                for (gid, name, _) in &groups {
+                    if ui.button(name).clicked() {
+                        action = Some(TabAction::SetGroup(id, Some(*gid)));
+                        ui.close();
+                    }
+                }
+                if group.is_some() && ui.button("Remove from group").clicked() {
+                    action = Some(TabAction::SetGroup(id, None));
+                    ui.close();
+                }
+            });
             if state.is_background() && ui.button("Discard (free memory)").clicked() {
                 action = Some(TabAction::Discard(id));
                 ui.close();
@@ -304,6 +435,13 @@ fn tab_strip(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, 
             TabAction::Mute(t, m) => b.set_muted(t, m),
             TabAction::Discard(t) => b.discard_tab(t),
             TabAction::Reopen => b.reopen_closed_tab(),
+            TabAction::SetGroup(t, g) => b.tabs.strip.set_group(t, g),
+            TabAction::NewGroup(t) => {
+                const COLORS: [[u8; 3]; 6] = [[0x4F, 0x7C, 0xFF], [0xE5, 0x5B, 0x5B], [0x3F, 0xB9, 0x6B], [0xE5, 0xA0, 0x2B], [0xA0, 0x6B, 0xE5], [0x2B, 0xB5, 0xC9]];
+                let n = b.tabs.strip.groups.len();
+                let g = b.tabs.strip.add_group(&format!("Group {}", n + 1), COLORS[n % COLORS.len()]);
+                b.tabs.strip.set_group(t, Some(g));
+            }
             TabAction::Move(t, i) => {
                 let global = b.tabs.strip.visible().nth(i).and_then(|x| b.tabs.strip.index_of(x.id)).unwrap_or(i);
                 b.tabs.strip.move_tab(t, global);
@@ -320,6 +458,8 @@ enum TabAction {
     Mute(TabId, bool),
     Discard(TabId),
     Reopen,
+    SetGroup(TabId, Option<GroupId>),
+    NewGroup(TabId),
     Move(TabId, usize),
 }
 

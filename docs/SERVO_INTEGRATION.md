@@ -19,6 +19,10 @@ Limits: it hides delivery from page JS, it does **not** stop bytes arriving on t
 ## Allocator
 `servo-allocator` with `use-jemalloc` is required (system allocator crashes Servo's reporter). `allocator.rs` sets `background_thread:true,dirty_decay_ms:3000,muzzy_decay_ms:3000` through the `_rjem_malloc_conf` symbol and exposes `opt_dirty_decay_ms()` so tests confirm it is live. jemalloc on macOS/aarch64 is **untested**.
 
+## More APIs used
+`WebView::favicon()` (+ `notify_favicon_changed`), `PermissionRequest` (held until the user answers), `WebView::cursor()`, `InputEvent::EditingAction`, `Opts { multiprocess, sandbox, config_dir, temporary_storage }`, `run_content_process(token)` (the shell re-executes itself with `--content-process <token>`), `Preferences { dom_notification_enabled, dom_permissions_enabled }`.
+Servo has **no download API**.
+
 ## Limits (not hidden)
 - `document.visibilityState` stays "visible" in Servo (upstream TODO), so pages get no `visibilitychange`.
 - No per-WebView image-cache release (`release_tab_images = false`).
