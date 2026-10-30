@@ -503,6 +503,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "browser-app"
+version = "0.1.0"
+dependencies = [
+ "browser-core",
+ "browser-engine",
+ "browser-memory",
+ "browser-network",
+ "browser-security",
+ "browser-session",
+ "browser-settings",
+ "browser-tabs",
+ "parking_lot",
+ "url",
+]
+
+[[package]]
 name = "browser-core"
 version = "0.1.0"
 dependencies = [
@@ -513,6 +529,12 @@ dependencies = [
 [[package]]
 name = "browser-engine"
 version = "0.1.0"
+dependencies = [
+ "browser-core",
+ "browser-memory",
+ "browser-settings",
+ "url",
+]
 
 [[package]]
 name = "browser-memory"
@@ -538,6 +560,13 @@ dependencies = [
 [[package]]
 name = "browser-security"
 version = "0.1.0"
+dependencies = [
+ "browser-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "url",
+]
 
 [[package]]
 name = "browser-session"
@@ -5060,6 +5089,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "380a2edcbdd9d91d59149f96433a7f1b2d3b128cd0c4055474bca1b76cb22fc1"
 dependencies = [
  "libc",
+ "tikv-jemalloc-sys",
+ "tikv-jemallocator",
  "windows-sys 0.61.2",
 ]
 
@@ -5510,7 +5541,22 @@ dependencies = [
 name = "servo-integration"
 version = "0.1.0"
 dependencies = [
+ "browser-app",
+ "browser-core",
+ "browser-engine",
+ "browser-memory",
+ "browser-network",
+ "browser-security",
+ "browser-settings",
+ "content-security-policy",
+ "euclid",
+ "http",
+ "rustls",
+ "serde_json",
  "servo",
+ "servo-allocator",
+ "servo-base",
+ "tracing",
  "url",
 ]
 
@@ -7067,6 +7113,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tikv-jemalloc-sys"
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8aa5b2ab86a2cefa406d889139c162cbb230092f7d1d7cbc1716405d852a3b"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359b4327f954e0567e69fb191cf1436617748813819c94b8cd4a431422d053a"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
+]
+
+[[package]]
 name = "time"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7345,7 +7411,19 @@ checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "log",
  "pin-project-lite",
+ "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

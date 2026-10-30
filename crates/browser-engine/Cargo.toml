@@ -5,3 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+browser-core.workspace = true
+browser-settings.workspace = true
+browser-memory.workspace = true
+url.workspace = true

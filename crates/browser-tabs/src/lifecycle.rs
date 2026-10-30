@@ -85,6 +85,20 @@ impl TabLifecycleManager {
         (id, cmds)
     }
 
+    /// Register a tab the engine created on its own (a gesture-approved popup).
+    /// No `Create` command: the WebView already exists.
+    pub fn adopt(&mut self, id: TabId, foreground: bool, settings: &Settings) -> Vec<LifecycleCommand> {
+        let now = self.clock.now();
+        let mut tab = Tab::new(id, self.strip.active_workspace, now);
+        tab.loading = true;
+        self.strip.insert_tab(tab, now);
+        if foreground {
+            self.select(id, settings)
+        } else {
+            vec![LifecycleCommand::Hide(id), self.apply_net(id, settings)]
+        }
+    }
+
     pub fn open_from_snapshot(&mut self, snap: &TabSnapshot, workspace: Option<WorkspaceId>) -> (TabId, Vec<LifecycleCommand>) {
         let now = self.clock.now();
         let id = TabId::next();

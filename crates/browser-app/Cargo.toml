@@ -1,0 +1,21 @@
+[package]
+name = "browser-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+browser-core.workspace = true
+browser-settings.workspace = true
+browser-memory.workspace = true
+browser-tabs.workspace = true
+browser-network.workspace = true
+browser-security.workspace = true
+browser-session.workspace = true
+browser-engine.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+parking_lot.workspace = true

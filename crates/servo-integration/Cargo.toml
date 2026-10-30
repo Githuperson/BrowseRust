@@ -8,4 +8,29 @@ publish.workspace = true
 
 [dependencies]
 servo = "=0.7.0"
+servo-base = "=0.7.0"
+browser-core.workspace = true
+browser-settings.workspace = true
+browser-memory.workspace = true
+browser-network.workspace = true
+browser-security.workspace = true
+browser-engine.workspace = true
 url.workspace = true
+serde_json.workspace = true
+euclid = "0.22"
+http = "1"
+content-security-policy = "0.9"
+tracing.workspace = true
+
+[dev-dependencies]
+browser-app.workspace = true
+browser-engine.workspace = true
+euclid = "0.22"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+
+# Servo's memory reporting (`malloc_size_of`) must match the process allocator.
+# With the system allocator, reporting a DOM object hit UB in `malloc_usable_size`
+# (observed: arithmetic overflow in servo-script-bindings/mem.rs). jemalloc is the
+# allocator Servo's own embedders use for this.
+[target.'cfg(not(any(windows, target_env = "ohos")))'.dependencies]
+servo-allocator = { version = "=0.7.0", features = ["use-jemalloc"] }

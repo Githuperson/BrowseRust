@@ -53,6 +53,11 @@ impl<H> NetworkHub<H> {
         }
     }
 
+    /// Is a browser-started navigation currently in flight for this tab?
+    pub fn user_nav_active(&self, tab: TabId) -> bool {
+        self.user_nav.get(&tab).is_some_and(|until| self.clock.now() < *until)
+    }
+
     pub fn load_complete(&mut self, tab: TabId) {
         self.user_nav.remove(&tab);
         if let Some(c) = self.tabs.get_mut(&tab) {
