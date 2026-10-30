@@ -65,11 +65,12 @@ fn parse_args() -> Args {
 
 fn data_dir(args: &Args) -> PathBuf {
     args.profile.clone().unwrap_or_else(|| {
-        let base = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(std::env::temp_dir);
-        base.join("browserust")
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        #[cfg(target_os = "macos")]
+        let base = home.map(|h| h.join("Library/Application Support"));
+        #[cfg(not(target_os = "macos"))]
+        let base = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".local/share")));
+        base.unwrap_or_else(std::env::temp_dir).join("browserust")
     })
 }
 
