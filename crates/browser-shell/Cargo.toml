@@ -25,7 +25,7 @@ browser-session.workspace = true
 browser-engine.workspace = true
 url.workspace = true
 euclid = "0.22"
-egui = "0.37"
+egui = { version = "0.37", features = ["default_fonts"] }
 egui_glow = { version = "0.37", features = ["winit"] }
 egui-winit = { version = "0.37", default-features = false, features = ["clipboard", "links", "wayland", "x11"] }
 winit = "0.30.13"

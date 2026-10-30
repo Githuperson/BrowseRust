@@ -55,3 +55,7 @@ strip = "symbols"
 debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
+
+# See vendor/epaint/BROWSERUST_PATCH.md
+[patch.crates-io]
+epaint = { path = "vendor/epaint" }
