@@ -14,3 +14,6 @@ Still missing: downloads (engine has no API), certificate error pages, find-in-p
 
 ## epaint patch
 `vendor/epaint` carries a 2-line fix (see its BROWSERUST_PATCH.md). Without it egui text panics on any multi-core machine because Servo's feature unification enables vello_cpu multithreading.
+
+## Downloads (engine gap)
+Servo 0.7.0 has no download API. Options, cheapest first: (1) in `load_web_resource` for user-initiated main-frame navigations, probe the response headers ourselves (Content-Disposition / non-renderable MIME) and, for a download, cancel Servo's load and stream the file with a browser-owned HTTP client, with progress UI, `sanitize_filename` and `assess_download`; (2) a small upstream Servo patch exposing a download delegate callback. See docs/BENCHMARKS.md for why switching engines was not chosen.
