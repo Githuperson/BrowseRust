@@ -15,7 +15,7 @@ Rust workspace. Servo is the only rendering engine and is reachable only through
 | `browser-app` | `Browser` orchestrator, omnibox resolver | done, tested with `MockEngine` |
 | `servo-integration` | `ServoEngine` over Servo 0.7.0 | done; one end-to-end test against real Servo |
 | `browser-storage` | history + bookmarks on SQLite (frecency suggestions, Netscape-HTML import/export, in-memory for private mode); `SecretStore` trait with OS-keyring impl | storage tested; **keyring backend compiles but is untested (no keychain here)** |
-| UI / shell (egui + winit) | tab strip, toolbar, content blit | **not built yet** |
+| `browser-shell` (binary `browserust`) | winit window + egui UI + Servo content blit: tab strip with lifecycle dots, toolbar, address bar with history suggestions, workspaces, menus (background modes, per-site exceptions, theme/density/accent), memory+network panel, history/bookmarks windows, session restore, shortcuts | **runs**; verified under Xvfb with screenshots and scripted input (Ctrl+T, typing, Enter, tab switch, menu). Not run on macOS or a real GPU |
 | extensions, downloads manager, devtools, password manager UI/autofill, PDF | | **not built** (see ROADMAP) |
 
 Data flow: the shell calls `Browser`; `TabLifecycleManager` returns `LifecycleCommand`s; `Browser::execute` turns them into `Engine` calls. `MemoryGovernor` is a pure function from a snapshot to actions, applied through the same state machine, which vetoes anything that would hit the foreground tab.
