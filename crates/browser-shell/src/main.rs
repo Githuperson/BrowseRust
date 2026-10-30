@@ -134,7 +134,7 @@ impl App {
         let args = &self.args;
         let dir = data_dir(args);
         let window = el
-            .create_window(Window::default_attributes().with_title("BrowseRust").with_inner_size(LogicalSize::new(1280.0, 820.0)))
+            .create_window(Window::default_attributes().with_title("BrowseRust (beta)").with_inner_size(LogicalSize::new(1280.0, 820.0)))
             .expect("window");
         let size = window.inner_size();
         let window_ctx = Rc::new(
@@ -542,6 +542,17 @@ fn main() {
     rustls::crypto::aws_lc_rs::default_provider().install_default().ok();
     // Content-process entry point: Servo re-executes this binary for each site process.
     let argv: Vec<String> = std::env::args().collect();
+    if argv.iter().any(|a| a == "--version" || a == "-V") {
+        println!("BrowseRust {} (beta)  engine: Servo 0.7.0", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "BrowseRust {} (beta)\n\nUSAGE: browserust [OPTIONS] [URL...]\n\nOPTIONS:\n  --profile <dir>    use this profile directory\n  --private          private session (nothing written to disk, except downloads)\n  --single-process   run web content in the browser process (debugging)\n  --version, -V      print version\n  --help, -h         print this help\n\nEach URL opens in its own tab. Press Ctrl+K inside the browser for commands.",
+            env!("CARGO_PKG_VERSION")
+        );
+        return;
+    }
     if argv.len() >= 3 && argv[1] == "--content-process" {
         servo::run_content_process(argv[2].clone());
         return;

@@ -1,0 +1,66 @@
+# NOTE: written for the beta but NOT yet run on GitHub; the macOS job in particular has never
+# been exercised (Servo on macOS may need extra Homebrew packages). Binaries are unsigned.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake python3 pkg-config \
+            libfontconfig1-dev libfreetype-dev libx11-dev libxkbcommon-x11-dev libxcb1-dev libegl1 libgles2
+      - name: macOS packages
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config python@3
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p browser-shell --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          V="${GITHUB_REF_NAME}"
+          D="browserust-${V}-${{ matrix.name }}"
+          mkdir "$D"
+          cp "target/${{ matrix.target }}/release/browserust" README.md LICENSE THIRD_PARTY.md CHANGELOG.md "$D/"
+          cp -r docs "$D/docs"
+          tar czf "$D.tar.gz" "$D"
+          shasum -a 256 "$D.tar.gz" > "$D.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: browserust-*
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          body_path: RELEASE_NOTES.md
+          files: dist/*

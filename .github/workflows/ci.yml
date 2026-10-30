@@ -1,0 +1,22 @@
+# NOTE: written for the beta but NOT yet run on GitHub; expect to adjust it on first use.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake python3 pkg-config \
+            libfontconfig1-dev libfreetype-dev libx11-dev libxkbcommon-x11-dev libxcb1-dev \
+            libegl1 libgles2 libgl1-mesa-dri mesa-utils xvfb
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit and integration tests (real Servo, software GL)
+        run: xvfb-run -a cargo test --workspace

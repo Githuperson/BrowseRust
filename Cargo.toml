@@ -18,10 +18,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2024"
 rust-version = "1.88"
-license = "MPL-2.0"
+license = "MIT"
 publish = false
 
 [workspace.dependencies]
@@ -49,8 +49,9 @@ servo-integration = { path = "crates/servo-integration" }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 4
+# Servo is huge: full/thin LTO makes release builds very slow and memory hungry.
+lto = false
+codegen-units = 16
 panic = "unwind"
 strip = "symbols"
 
