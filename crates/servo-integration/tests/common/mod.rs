@@ -53,12 +53,18 @@ impl EventLoopWaker for NoopWaker {
 }
 
 pub fn new_browser(settings: Settings) -> Browser<ServoEngine> {
+    new_browser_with(settings, None)
+}
+
+pub fn new_browser_with(settings: Settings, downloads: Option<Arc<browser_downloads::DownloadManager>>) -> Browser<ServoEngine> {
     rustls::crypto::aws_lc_rs::default_provider().install_default().ok();
     let ctx: Rc<dyn RenderingContext> = Rc::new(SoftwareRenderingContext::new((800u32, 600u32).into()).expect("software GL"));
     let _ = ctx.make_current();
     let servo = ServoBuilder::default().event_loop_waker(Box::new(NoopWaker)).build();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let engine = ServoEngine::new(servo, ctx, clock.clone(), ServoEngineConfig::new(1.0, Box::new(|_| false), Box::new(|| {})));
+    let mut cfg = ServoEngineConfig::new(1.0, Box::new(|_| false), Box::new(|| {}));
+    cfg.downloads = downloads;
+    let engine = ServoEngine::new(servo, ctx, clock.clone(), cfg);
     let popups = Rc::new(std::cell::RefCell::new(browser_security::PopupBlocker::new(clock.clone())));
     Browser::new(engine, settings, clock, platform_probe(), popups)
 }
@@ -112,4 +118,18 @@ pub fn uss_mib(b: &Browser<ServoEngine>) -> f64 {
     let _ = b;
     let p = platform_probe().process().expect("process memory");
     p.best_unique().0 as f64 / (1024.0 * 1024.0)
+}
+
+/// Like `wait_until`, but the condition is handed the browser (no borrow conflict).
+pub fn wait_for(b: &mut Browser<ServoEngine>, what: &str, timeout: Duration, mut cond: impl FnMut(&Browser<ServoEngine>) -> bool) {
+    let end = Instant::now() + timeout;
+    while Instant::now() < end {
+        b.engine.spin();
+        b.tick();
+        if cond(b) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for: {what}");
 }

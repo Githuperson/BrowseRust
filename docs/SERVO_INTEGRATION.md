@@ -21,7 +21,10 @@ Limits: it hides delivery from page JS, it does **not** stop bytes arriving on t
 
 ## More APIs used
 `WebView::favicon()` (+ `notify_favicon_changed`), `PermissionRequest` (held until the user answers), `WebView::cursor()`, `InputEvent::EditingAction`, `Opts { multiprocess, sandbox, config_dir, temporary_storage }`, `run_content_process(token)` (the shell re-executes itself with `--content-process <token>`), `Preferences { dom_notification_enabled, dom_permissions_enabled }`.
-Servo has **no download API**.
+Servo has **no download API**, so downloads are handled in the shell layer (crates/browser-downloads + servo-integration):
+a main-frame `GET` that passes the network policy is *held* (`WebResourceLoad` kept alive), a worker thread repeats the request with our own HTTP client using Servo's cookies (looked up on the main thread through a channel, since the jar is not thread-safe), and `decide()` classifies the response (Content-Disposition attachment, or a non-renderable MIME type; error/redirect/204 responses always render). If it is a download, the manager streams it to `<name>.part` then renames, and Servo's request is answered with **204 No Content** so the current page stays. Otherwise the held handle is dropped and Servo loads normally.
+Verified on real Servo (tests/downloads_e2e.rs): attachment saved, page stays, HTML unaffected, cookie-authenticated download works.
+Costs/limits: every user-visible main-frame GET hits the server **twice** (probe + real load) and adds roughly one round trip; POST navigations, iframes, subresources and redirects-by-Servo are not probed; downloads started by `<a download>` on same-origin non-navigation paths, blob:/data: URLs and downloads triggered by JS `fetch` are not handled; redirects are followed by our client with cookies recomputed per hop and never forwarded across origins (tested).
 
 ## Limits (not hidden)
 - `document.visibilityState` stays "visible" in Servo (upstream TODO), so pages get no `visibilitychange`.

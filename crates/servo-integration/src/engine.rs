@@ -1,4 +1,6 @@
-use crate::delegate::{PendingPerm, Shared, TabDelegate, cancel};
+use crate::delegate::{CookieQuery, PendingPerm, Shared, TabDelegate, cancel};
+use browser_downloads::{DownloadManager, ProbeResult, RequestContext};
+use std::sync::mpsc::{Receiver, channel};
 use crate::memory::{self, Line, ServoMemory};
 use browser_core::{Clock, TabId, TabState};
 use browser_engine::{Engine, EngineCaps, EngineEvent, FaviconImage, TabMemorySample};
@@ -27,6 +29,10 @@ pub struct ServoEngineConfig {
     pub memory_report_interval: Duration,
     /// Persistent (or in-memory, for private browsing) permission decisions.
     pub permissions: Rc<RefCell<browser_security::PermissionStore>>,
+    /// When set, main-frame downloads are detected and handled by this manager.
+    pub downloads: Option<Arc<DownloadManager>>,
+    /// Wakes the host event loop from worker threads.
+    pub waker: Option<Box<dyn servo::EventLoopWaker>>,
 }
 
 impl ServoEngineConfig {
@@ -39,6 +45,8 @@ impl ServoEngineConfig {
             controller: ControllerConfig::default(),
             memory_report_interval: Duration::from_secs(5),
             permissions: Rc::new(RefCell::new(browser_security::PermissionStore::in_memory())),
+            downloads: None,
+            waker: None,
         }
     }
 }
@@ -63,11 +71,26 @@ pub struct ServoEngine {
     memory: ServoMemory,
     last_report_request: Cell<Option<Instant>>,
     report_interval: Duration,
+    downloads: Option<Arc<DownloadManager>>,
+    probe_rx: Receiver<(u64, RequestContext, ProbeResult)>,
+    cookie_query_rx: Receiver<CookieQuery>,
+    cookie_query_tx: Arc<std::sync::Mutex<std::sync::mpsc::Sender<CookieQuery>>>,
 }
 
 impl ServoEngine {
     pub fn new(servo: Servo, ctx: Rc<dyn RenderingContext>, clock: Arc<dyn Clock>, cfg: ServoEngineConfig) -> Self {
+        let (probe_tx, probe_rx) = channel();
+        let (cq_tx, cookie_query_rx) = channel::<CookieQuery>();
+        let cookie_query_tx = Arc::new(std::sync::Mutex::new(cq_tx));
+        let jar = servo.clone();
         let shared = Rc::new(Shared {
+            probing: RefCell::new(HashMap::new()),
+            next_probe: Cell::new(0),
+            downloads_enabled: cfg.downloads.is_some(),
+            probe_tx,
+            cookie_query_tx: cookie_query_tx.clone(),
+            cookie_for: Box::new(move |u| cookie_header(&jar, u)),
+            waker: cfg.waker,
             hub: RefCell::new(NetworkHub::new(clock.clone(), cfg.controller, cfg.policy)),
             events: RefCell::new(VecDeque::new()),
             adopted: RefCell::new(Vec::new()),
@@ -93,6 +116,10 @@ impl ServoEngine {
             memory: ServoMemory::default(),
             last_report_request: Cell::new(None),
             report_interval: cfg.memory_report_interval,
+            downloads: cfg.downloads,
+            probe_rx,
+            cookie_query_rx,
+            cookie_query_tx,
         }
     }
 
@@ -151,6 +178,37 @@ impl ServoEngine {
             let _ = self.shared.permissions.borrow_mut().set(&p.origin, p.feature, d);
         }
         if allow { p.request.allow() } else { p.request.deny() }
+    }
+
+    /// Answer cookie lookups from worker threads and act on finished download probes.
+    fn service_downloads(&mut self) {
+        while let Ok((url, reply)) = self.cookie_query_rx.try_recv() {
+            let _ = reply.send(cookie_header(&self.servo, &url));
+        }
+        while let Ok((id, ctx, result)) = self.probe_rx.try_recv() {
+            let Some((_tab, handle)) = self.shared.probing.borrow_mut().remove(&id) else { continue };
+            match (result, &self.downloads) {
+                (ProbeResult::Download { url, filename, total, .. }, Some(mgr)) => {
+                    let q = self.cookie_query_tx.clone();
+                    let waker = self.shared.waker.as_ref().map(|w| w.clone_box());
+                    let cookies: Arc<dyn Fn(&url::Url) -> Option<String> + Send + Sync> = Arc::new(move |u| {
+                        let (rtx, rrx) = channel();
+                        q.lock().ok()?.send((u.clone(), rtx)).ok()?;
+                        if let Some(w) = &waker {
+                            w.wake();
+                        }
+                        rrx.recv_timeout(Duration::from_secs(2)).ok().flatten()
+                    });
+                    let dctx = RequestContext { url, cookie: ctx.cookie.clone(), referer: ctx.referer.clone(), user_agent: ctx.user_agent.clone() };
+                    mgr.start(dctx, filename, total, cookies);
+                    // 204 No Content: the browser keeps showing the current page.
+                    let u = handle.request.url.clone();
+                    handle.intercept(servo::WebResourceResponse::new(u).status_code(http::StatusCode::NO_CONTENT)).finish();
+                }
+                // Not a download (or the probe failed): let Servo load it normally.
+                _ => drop(handle),
+            }
+        }
     }
 
     pub fn servo_memory(&self) -> &ServoMemory {
@@ -265,6 +323,12 @@ impl Engine for ServoEngine {
         // removes the WebView from the painter: this is what frees renderer memory.
         self.views.remove(&tab);
         self.shared.pending_perms.borrow_mut().retain(|p| p.tab != tab);
+        let dead: Vec<u64> = self.shared.probing.borrow().iter().filter(|(_, (t, _))| *t == tab).map(|(k, _)| *k).collect();
+        for k in dead {
+            if let Some((_, h)) = self.shared.probing.borrow_mut().remove(&k) {
+                cancel(h);
+            }
+        }
         self.shared.expected.borrow_mut().remove(&tab);
         let outcomes = self.shared.hub.borrow_mut().remove_tab(tab);
         self.shared.settle(outcomes);
@@ -389,10 +453,20 @@ impl Engine for ServoEngine {
         self.shared.settle(expired);
         self.request_memory_report();
         self.ingest_memory_report();
+        self.service_downloads();
     }
 
     fn poll_events(&mut self) -> Vec<EngineEvent> {
         self.adopt_popups();
         self.shared.events.borrow_mut().drain(..).collect()
     }
+}
+
+/// `name=value; ...` for the cookies Servo would send to `url`.
+fn cookie_header(servo: &Servo, url: &url::Url) -> Option<String> {
+    let jars = servo.site_data_manager().cookies_for_url(url.clone(), servo::CookieSource::HTTP);
+    if jars.is_empty() {
+        return None;
+    }
+    Some(jars.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; "))
 }

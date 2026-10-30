@@ -6606,6 +6606,7 @@ dependencies = [
  "base64 0.22.1",
  "browser-app",
  "browser-core",
+ "browser-downloads",
  "browser-engine",
  "browser-memory",
  "browser-network",
