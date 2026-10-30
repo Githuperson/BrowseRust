@@ -34,7 +34,7 @@ use winit::window::{Window, WindowId};
 
 #[derive(Default)]
 struct Args {
-    url: Option<String>,
+    urls: Vec<String>,
     profile: Option<PathBuf>,
     private: bool,
     single_process: bool,
@@ -54,7 +54,7 @@ fn parse_args() -> Args {
             "--sandbox" => a.sandbox = true,
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
             "--exit-after" => a.exit_after = it.next().and_then(|s| s.parse().ok()),
-            other if !other.starts_with("--") => a.url = Some(other.to_string()),
+            other if !other.starts_with("--") => a.urls.push(other.to_string()),
             _ => {}
         }
     }
@@ -173,15 +173,14 @@ impl App {
         let session = (!args.private).then(|| SessionStore::new(&dir));
         let crashed = session.as_ref().is_some_and(|s| s.begin_run().unwrap_or(false));
 
-        match (&args.url, &session) {
-            (Some(u), _) => {
+        if !args.urls.is_empty() {
+            for u in &args.urls {
                 let url = browser_app::resolve_input(u, &browser.settings.search_template).map(|r| r.url().clone());
                 browser.open_tab(url, true);
             }
-            (None, Some(s)) if browser.restore_session(s) > 0 => {}
-            _ => {
-                browser.open_tab(Url::parse(&browser.settings.home_page.clone()).ok(), true);
-            }
+        } else if session.as_ref().is_some_and(|s| browser.restore_session(s) > 0) {
+        } else {
+            browser.open_tab(Url::parse(&browser.settings.home_page.clone()).ok(), true);
         }
 
         let egui_ctx = egui::Context::default();
@@ -192,7 +191,7 @@ impl App {
         if crashed {
             ui_state.status = "The browser did not close cleanly last time; your tabs were restored.".into();
         }
-        ui_state.focus_address = args.url.is_none();
+        ui_state.focus_address = args.urls.is_empty();
 
         Running {
             window,
