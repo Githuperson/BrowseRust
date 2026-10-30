@@ -6,10 +6,10 @@ use browser_memory::TrimLevel;
 use browser_network::{ControllerConfig, NetworkHub, NetworkPolicy};
 use browser_settings::BackgroundMode;
 use servo::profile_traits::mem::MemoryReportResult;
-use servo::{RenderingContext, Servo, WebView, WebViewBuilder};
+use servo::{RenderingContext, Servo, UserContentManager, UserScript, WebView, WebViewBuilder};
 use servo_base::generic_channel::GenericCallback;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -44,6 +44,8 @@ pub struct ServoEngine {
     servo: Servo,
     shared: Rc<Shared>,
     views: HashMap<TabId, WebView>,
+    /// Holds the stream-gate user script; kept alive for the engine's lifetime.
+    user_content: Rc<UserContentManager>,
     clock: Arc<dyn Clock>,
     memory_inbox: Arc<Mutex<Option<MemoryReportResult>>>,
     memory: ServoMemory,
@@ -58,14 +60,18 @@ impl ServoEngine {
             events: RefCell::new(VecDeque::new()),
             adopted: RefCell::new(Vec::new()),
             expected: RefCell::new(HashMap::new()),
+            paused: RefCell::new(HashSet::new()),
             ctx,
             hidpi: Cell::new(cfg.hidpi),
             allow_popup: cfg.allow_popup,
             on_frame: cfg.on_frame,
         });
+        let user_content = Rc::new(UserContentManager::new(&servo));
+        user_content.add_script(Rc::new(UserScript::new(STREAM_GATE_JS.to_string(), None)));
         Self {
             servo,
             shared,
+            user_content,
             views: HashMap::new(),
             clock,
             memory_inbox: Arc::default(),
@@ -165,6 +171,9 @@ impl ServoEngine {
     }
 }
 
+/// Document-start script that gates WebSocket/EventSource delivery (see stream_gate.js).
+const STREAM_GATE_JS: &str = include_str!("stream_gate.js");
+
 const PAGE_STATE_JS: &str = r#"(function(){var d=false;try{var els=document.querySelectorAll('input,textarea,select');
 for(var i=0;i<els.length&&!d;i++){var e=els[i];var t=(e.type||'').toLowerCase();if(t==='password'||t==='hidden'||t==='file')continue;
 if(e.tagName==='SELECT'){for(var j=0;j<e.options.length;j++){if(e.options[j].selected!==e.options[j].defaultSelected){d=true;break;}}}
@@ -183,8 +192,9 @@ impl Engine for ServoEngine {
             release_tab_images: false,
             // Memory reports are per process, attributed to tabs by document URL.
             per_tab_memory: true,
-            // No embedder hook for WebSocket/SSE message delivery in Servo 0.7.0.
-            pause_stream_delivery: false,
+            // No embedder hook exists in Servo 0.7.0, so delivery is gated by an injected
+            // user script (stream_gate.js) with a bounded queue. Main-thread sockets only.
+            pause_stream_delivery: true,
             // Throttling only; no embedder API suspends script outright.
             suspend_script: false,
         }
@@ -203,6 +213,7 @@ impl Engine for ServoEngine {
         }
         let mut b = WebViewBuilder::new(&self.servo, self.shared.ctx.clone())
             .hidpi_scale_factor(euclid::Scale::new(self.shared.hidpi.get()))
+            .user_content_manager(self.user_content.clone())
             .delegate(Rc::new(TabDelegate { tab, shared: self.shared.clone() }));
         if let Some(u) = url {
             b = b.url(u.clone());
@@ -270,6 +281,14 @@ impl Engine for ServoEngine {
     fn apply_network(&mut self, tab: TabId, state: TabState, mode: BackgroundMode) {
         let resumed = self.shared.hub.borrow_mut().set_state(tab, state, mode);
         self.settle_resumed(resumed);
+        // Pause stream delivery exactly when the network policy restricts the tab.
+        let pause = browser_network::effective_mode(state, mode) != BackgroundMode::Normal;
+        if pause {
+            self.shared.paused.borrow_mut().insert(tab);
+        } else {
+            self.shared.paused.borrow_mut().remove(&tab);
+        }
+        self.eval(tab, if pause { "window.__bpPause && window.__bpPause(true)" } else { "window.__bpPause && window.__bpPause(false)" }, |_| {});
     }
 
     fn begin_user_navigation(&mut self, tab: TabId) {

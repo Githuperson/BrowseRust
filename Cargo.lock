@@ -5969,6 +5969,7 @@ dependencies = [
 name = "servo-integration"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "browser-app",
  "browser-core",
  "browser-engine",
@@ -5984,6 +5985,7 @@ dependencies = [
  "servo",
  "servo-allocator",
  "servo-base",
+ "sha1 0.10.7",
  "tracing",
  "url",
 ]

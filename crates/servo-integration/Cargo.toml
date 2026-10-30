@@ -23,6 +23,8 @@ content-security-policy = "0.9"
 tracing.workspace = true
 
 [dev-dependencies]
+sha1 = "0.10"
+base64 = "0.22"
 browser-app.workspace = true
 browser-engine.workspace = true
 euclid = "0.22"

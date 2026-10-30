@@ -19,7 +19,7 @@ use servo::{
     WebView, WebViewDelegate,
 };
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use url::Url;
 
@@ -31,6 +31,8 @@ pub struct Shared {
     /// The one URL the browser itself asked each tab to load (needed so a typed
     /// `file:` URL is allowed while a page-initiated one is not).
     pub expected: RefCell<HashMap<TabId, Url>>,
+    /// Tabs whose WebSocket/SSE delivery is currently paused.
+    pub paused: RefCell<HashSet<TabId>>,
     pub ctx: Rc<dyn RenderingContext>,
     pub hidpi: Cell<f32>,
     pub allow_popup: Box<dyn Fn(TabId) -> bool>,
@@ -73,7 +75,11 @@ impl WebViewDelegate for TabDelegate {
         self.shared.push(EngineEvent::TitleChanged(self.tab, title));
     }
 
-    fn notify_load_status_changed(&self, _wv: WebView, status: LoadStatus) {
+    fn notify_load_status_changed(&self, wv: WebView, status: LoadStatus) {
+        // A new document in a paused tab starts unpaused: re-arm the stream gate.
+        if status == LoadStatus::HeadParsed && self.shared.paused.borrow().contains(&self.tab) {
+            wv.evaluate_javascript("window.__bpPause && window.__bpPause(true)", |_| {});
+        }
         let st = match status {
             LoadStatus::Started => LoadState::Started,
             LoadStatus::HeadParsed => LoadState::HeadParsed,

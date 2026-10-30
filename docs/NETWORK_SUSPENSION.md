@@ -12,8 +12,17 @@ Per-tab `NetworkActivityController` (never per origin). Classes: navigation, doc
 
 After returning: polling resumed, HTML requested once, same JS nonce (no reload).
 
+## Streaming (real Servo, measured)
+| | before stream gate | with stream gate |
+|---|---|---|
+| page JS receives SSE/WS in background (5 s) | +29 / +29 | **+0 / +0** (58 queued, cap 256) |
+| after return | live | backlog replayed in order, then live; SSE not reconnected |
+| stream faster than the cap | unbounded in page | queue stays at 256, socket closed, page gets `error` and reconnects |
+
+Frozen state (real Servo): idle background tabs freeze on the timer, hold requests, and return with the same JS context and one document request.
+Keep-alive: 0 requests in the background; after return 17-18 requests used 1-2 new connections, so reuse is **mostly** but not fully preserved. Not tuned.
+
 ## Not done / limits
-- Keep-alive: nothing closes pooled connections on tab switch, but this is **not tested**; test server used `Connection: close`.
-- WebSocket/SSE: existing connections cannot be paused (see SERVO_INTEGRATION). `stream.rs` has the bounded queue and plan, not wired to the engine. New SSE reconnects are held if they pass `load_web_resource`. No zero-incoming-data guarantee is possible.
-- Service workers and background workers: untested.
-- "Refresh content when returning": implemented as `reload()`, off by default; not tested.
+- The server keeps sending: the gate hides data from the page, it does not stop TCP traffic. No zero-incoming-data guarantee is possible.
+- Workers / service workers: not gated, untested.
+- "Refresh content when returning": implemented as `reload()`, off by default; untested.
