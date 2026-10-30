@@ -135,7 +135,8 @@ fn background_tabs_pause_network_keep_state_and_resume_in_place() {
     let mut settings = Settings::default();
     // Freeze timings are long; this test exercises WARM + network policy.
     settings.background_mode = BackgroundMode::SmartPause;
-    let mut b = Browser::new(engine, settings, clock, platform_probe());
+    let popups = Rc::new(std::cell::RefCell::new(browser_security::PopupBlocker::new(clock.clone())));
+    let mut b = Browser::new(engine, settings, clock, platform_probe(), popups);
 
     // ---- Tab A loads and polls in the foreground.
     let a = b.open_tab(Some(Url::parse(&format!("{base}/a")).unwrap()), true);

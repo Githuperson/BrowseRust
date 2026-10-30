@@ -59,7 +59,8 @@ pub fn new_browser(settings: Settings) -> Browser<ServoEngine> {
     let servo = ServoBuilder::default().event_loop_waker(Box::new(NoopWaker)).build();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let engine = ServoEngine::new(servo, ctx, clock.clone(), ServoEngineConfig::new(1.0, Box::new(|_| false), Box::new(|| {})));
-    Browser::new(engine, settings, clock, platform_probe())
+    let popups = Rc::new(std::cell::RefCell::new(browser_security::PopupBlocker::new(clock.clone())));
+    Browser::new(engine, settings, clock, platform_probe(), popups)
 }
 
 pub fn count(h: &Hits, path: &str) -> usize {

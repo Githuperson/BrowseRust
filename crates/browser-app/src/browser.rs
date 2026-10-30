@@ -7,7 +7,9 @@ use browser_security::{NavVerdict, PopupBlocker, check_navigation};
 use browser_session::{SavedTab, SessionStore};
 use browser_settings::{BackgroundMode, Settings};
 use browser_tabs::{LifecycleCommand, TabLifecycleManager};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -27,7 +29,8 @@ pub struct Browser<E: Engine> {
     pub engine: E,
     pub settings: Settings,
     pub tabs: TabLifecycleManager,
-    pub popups: PopupBlocker,
+    /// Shared with the engine adapter, which consults it when a page calls `window.open`.
+    pub popups: Rc<RefCell<PopupBlocker>>,
     clock: Arc<dyn Clock>,
     ledger: MemoryLedger,
     governor: MemoryGovernor,
@@ -40,12 +43,12 @@ pub struct Browser<E: Engine> {
 }
 
 impl<E: Engine> Browser<E> {
-    pub fn new(engine: E, settings: Settings, clock: Arc<dyn Clock>, probe: Box<dyn MemoryProbe>) -> Self {
+    pub fn new(engine: E, settings: Settings, clock: Arc<dyn Clock>, probe: Box<dyn MemoryProbe>, popups: Rc<RefCell<PopupBlocker>>) -> Self {
         Self {
             engine,
             settings,
             tabs: TabLifecycleManager::new(clock.clone()),
-            popups: PopupBlocker::new(clock.clone()),
+            popups,
             clock,
             ledger: MemoryLedger::default(),
             governor: MemoryGovernor::new(GovernorConfig::default()),
@@ -76,7 +79,7 @@ impl<E: Engine> Browser<E> {
     }
 
     pub fn close_tab(&mut self, id: TabId) {
-        self.popups.forget(id);
+        self.popups.borrow_mut().forget(id);
         self.pending_scroll.remove(&id);
         self.ledger.forget(id);
         let cmds = self.tabs.close(id, &self.settings);
@@ -198,7 +201,7 @@ impl<E: Engine> Browser<E> {
             }
             EngineEvent::NewTabRequested { from, url } => {
                 let allowed_target = url.as_ref().is_none_or(|u| check_navigation(u, false, true) == NavVerdict::Allow);
-                if allowed_target && self.popups.allow_popup(from) {
+                if allowed_target && self.popups.borrow_mut().allow_popup(from) {
                     self.open_tab(url, true);
                 }
             }
@@ -374,7 +377,7 @@ mod tests {
             pressure: Mutex::new(None),
             footprint: Mutex::new(ByteSize::mib(500).0),
         });
-        let b = Browser::new(MockEngine::default(), Settings::default(), Arc::new(clock.clone()), Box::new(SharedProbe(probe.clone())));
+        let b = Browser::new(MockEngine::default(), Settings::default(), Arc::new(clock.clone()), Box::new(SharedProbe(probe.clone())), Rc::new(RefCell::new(PopupBlocker::new(Arc::new(clock.clone())))));
         Fx { b, clock, probe }
     }
     fn u(s: &str) -> Url {
@@ -474,7 +477,7 @@ mod tests {
         f.b.engine.events.push(EngineEvent::NewTabRequested { from: a, url: Some(u("https://ad.test/")) });
         f.b.pump_events();
         assert_eq!(f.b.tabs.strip.len(), before, "no gesture → blocked");
-        f.b.popups.note_user_input(a);
+        f.b.popups.borrow_mut().note_user_input(a);
         f.b.engine.events.push(EngineEvent::NewTabRequested { from: a, url: Some(u("file:///etc/passwd")) });
         f.b.pump_events();
         assert_eq!(f.b.tabs.strip.len(), before, "gesture but unsafe target → blocked");

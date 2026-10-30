@@ -1,0 +1,33 @@
+[package]
+name = "browser-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "browserust"
+path = "src/main.rs"
+
+[dependencies]
+servo-integration.workspace = true
+servo = "=0.7.0"
+keyboard-types = "0.8"
+browser-app.workspace = true
+browser-core.workspace = true
+browser-settings.workspace = true
+browser-memory.workspace = true
+browser-network.workspace = true
+browser-security.workspace = true
+browser-storage.workspace = true
+browser-session.workspace = true
+browser-engine.workspace = true
+url.workspace = true
+euclid = "0.22"
+egui = "0.37"
+egui_glow = { version = "0.37", features = ["winit"] }
+egui-winit = { version = "0.37", default-features = false, features = ["clipboard", "links", "wayland", "x11"] }
+winit = "0.30.13"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+tracing.workspace = true

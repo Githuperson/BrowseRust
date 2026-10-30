@@ -11,6 +11,7 @@ members = [
     "crates/browser-engine",
     "crates/browser-app",
     "crates/browser-storage",
+    "crates/browser-shell",
     "crates/servo-integration",
 ]
 
