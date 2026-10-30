@@ -1,0 +1,11 @@
+[package]
+name = "servo-integration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+servo = "=0.7.0"
+url.workspace = true

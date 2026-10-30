@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/browser-core",
+    "crates/browser-memory",
+    "crates/browser-tabs",
+    "crates/browser-network",
+    "crates/browser-settings",
+    "crates/browser-session",
+    "crates/browser-security",
+    "crates/browser-engine",
+    "crates/servo-integration",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MPL-2.0"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+url = "2"
+parking_lot = "0.12"
+tracing = "0.1"
+
+# Browser-owned crates
+browser-core = { path = "crates/browser-core" }
+browser-memory = { path = "crates/browser-memory" }
+browser-tabs = { path = "crates/browser-tabs" }
+browser-network = { path = "crates/browser-network" }
+browser-settings = { path = "crates/browser-settings" }
+browser-session = { path = "crates/browser-session" }
+browser-security = { path = "crates/browser-security" }
+browser-engine = { path = "crates/browser-engine" }
+servo-integration = { path = "crates/servo-integration" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+panic = "unwind"
+strip = "symbols"
+
+# Servo is enormous; keep dev builds usable.
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
