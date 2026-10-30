@@ -13,6 +13,7 @@ members = [
     "crates/browser-storage",
     "crates/browser-shell",
     "crates/browser-downloads",
+    "crates/browser-themes",
     "crates/servo-integration",
 ]
 
@@ -43,6 +44,7 @@ browser-engine = { path = "crates/browser-engine" }
 browser-app = { path = "crates/browser-app" }
 browser-storage = { path = "crates/browser-storage" }
 browser-downloads = { path = "crates/browser-downloads" }
+browser-themes = { path = "crates/browser-themes" }
 servo-integration = { path = "crates/servo-integration" }
 
 [profile.release]

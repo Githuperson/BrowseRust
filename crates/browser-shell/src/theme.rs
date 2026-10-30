@@ -17,6 +17,13 @@ pub struct Palette {
     pub accent: Color32,
 }
 
+impl Palette {
+    pub fn from_theme(c: &browser_themes::UiColors) -> Self {
+        let f = |r: browser_themes::Rgb| Color32::from_rgb(r.0, r.1, r.2);
+        Palette { strip: f(c.strip), bar: f(c.bar), surface: f(c.surface), text: f(c.text), subtle: f(c.subtle), border: f(c.border), hover: f(c.hover), accent: f(c.accent) }
+    }
+}
+
 pub fn palette(dark: bool, accent: Color32) -> Palette {
     if dark {
         Palette {
@@ -43,10 +50,13 @@ pub fn palette(dark: bool, accent: Color32) -> Palette {
     }
 }
 
-pub fn apply(ctx: &egui::Context, accent: Color32) {
+/// `custom` replaces the built-in palette (both egui styles get it; the shell forces the
+/// matching base theme so dark/light widget defaults agree with the colours).
+pub fn apply(ctx: &egui::Context, accent: Color32, custom: Option<Palette>) {
     ctx.all_styles_mut(|st| {
         let dark = st.visuals.dark_mode;
-        let p = palette(dark, accent);
+        let p = custom.unwrap_or_else(|| palette(dark, accent));
+        let accent = p.accent;
         let v = &mut st.visuals;
         v.panel_fill = p.bar;
         v.window_fill = p.bar;

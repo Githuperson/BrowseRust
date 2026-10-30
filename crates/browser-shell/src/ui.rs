@@ -8,6 +8,7 @@ use browser_downloads::{DownloadManager, JobState};
 use browser_security::{DownloadRisk, SecurityLevel, security_level};
 use browser_settings::{BackgroundMode, Density, SiteMode, SiteSettings, Theme};
 use browser_storage::Store;
+use browser_themes::{ThemeEntry, UiColors};
 use browser_tabs::TabIcon;
 use egui::{Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2, pos2, vec2};
 use servo_integration::ServoEngine;
@@ -44,7 +45,13 @@ pub struct UiState {
     icons: HashMap<usize, egui::TextureHandle>,
     icons_used: HashSet<usize>,
     last_job_count: usize,
-    applied_look: Option<(Theme, [u8; 3])>,
+    applied_look: Option<(Theme, [u8; 3], Option<String>, u64)>,
+    /// Custom themes found in the profile's themes folder.
+    pub themes: Vec<ThemeEntry>,
+    pub theme_gen: u64,
+    pub theme_dir: std::path::PathBuf,
+    pub open_themes_folder: bool,
+    pub reload_themes: bool,
 }
 
 impl UiState {
@@ -53,19 +60,33 @@ impl UiState {
     }
 }
 
-fn pal(ui: &egui::Ui, b: &Browser<ServoEngine>) -> Palette {
+/// Colours of the selected custom theme, if any (`None` = built-in palette).
+fn custom_colors(ctx: &egui::Context, b: &Browser<ServoEngine>, st: &UiState) -> Option<UiColors> {
+    let want = b.settings.appearance.custom_theme.as_ref()?;
+    let entry = st.themes.iter().find(|e| &e.file == want && e.error.is_none())?;
+    let system_dark = ctx.system_theme().map(|t| t == egui::Theme::Dark).unwrap_or(true);
+    entry.theme.resolve(system_dark)
+}
+
+fn pal(ui: &egui::Ui, b: &Browser<ServoEngine>, st: &UiState) -> Palette {
+    if let Some(c) = custom_colors(ui.ctx(), b, st) {
+        return theme::Palette::from_theme(&c);
+    }
     let a = b.settings.appearance.accent;
     theme::palette(ui.visuals().dark_mode, Color32::from_rgb(a[0], a[1], a[2]))
 }
 
-pub fn apply_theme(ctx: &egui::Context, b: &Browser<ServoEngine>) {
-    ctx.set_theme(match b.settings.appearance.theme {
-        Theme::Light => egui::ThemePreference::Light,
-        Theme::Dark => egui::ThemePreference::Dark,
-        Theme::System => egui::ThemePreference::System,
-    });
+pub fn apply_theme(ctx: &egui::Context, b: &Browser<ServoEngine>, custom: Option<UiColors>) {
+    let pref = match (&custom, b.settings.appearance.theme) {
+        // A custom theme decides dark/light from its own colours.
+        (Some(c), _) => if c.dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light },
+        (None, Theme::Light) => egui::ThemePreference::Light,
+        (None, Theme::Dark) => egui::ThemePreference::Dark,
+        (None, Theme::System) => egui::ThemePreference::System,
+    };
+    ctx.set_theme(pref);
     let a = b.settings.appearance.accent;
-    theme::apply(ctx, Color32::from_rgb(a[0], a[1], a[2]));
+    theme::apply(ctx, Color32::from_rgb(a[0], a[1], a[2]), custom.as_ref().map(theme::Palette::from_theme));
 }
 
 fn state_color(s: TabState, accent: Color32) -> Color32 {
@@ -124,13 +145,15 @@ enum Cmd {
     Memory,
     Fullscreen,
     SetTheme(Theme),
+    SetCustomTheme(Option<String>),
+    OpenThemesFolder,
     SetMode(BackgroundMode),
     DiscardOthers,
     ClearHistory,
     Switch(TabId),
 }
 
-fn command_list(b: &Browser<ServoEngine>) -> Vec<(String, Cmd)> {
+fn command_list(b: &Browser<ServoEngine>, st: &UiState) -> Vec<(String, Cmd)> {
     let mut v: Vec<(String, Cmd)> = vec![
         ("New tab".into(), Cmd::NewTab),
         ("Close tab".into(), Cmd::CloseTab),
@@ -158,6 +181,11 @@ fn command_list(b: &Browser<ServoEngine>) -> Vec<(String, Cmd)> {
         ("Discard all other background tabs (free memory)".into(), Cmd::DiscardOthers),
         ("Clear browsing history".into(), Cmd::ClearHistory),
     ];
+    v.push(("Theme: built-in".into(), Cmd::SetCustomTheme(None)));
+    v.push(("Open themes folder".into(), Cmd::OpenThemesFolder));
+    for e in st.themes.iter().filter(|e| e.error.is_none()) {
+        v.push((format!("Theme: {}", e.display_name()), Cmd::SetCustomTheme(Some(e.file.clone()))));
+    }
     for t in b.tabs.strip.visible() {
         v.push((format!("Switch to: {}", t.display_title()), Cmd::Switch(t.id)));
     }
@@ -212,7 +240,12 @@ fn exec(cmd: Cmd, st: &mut UiState, b: &mut Browser<ServoEngine>, store: &Store)
         Cmd::Bookmarks => st.show_bookmarks = !st.show_bookmarks,
         Cmd::Memory => st.show_memory = !st.show_memory,
         Cmd::Fullscreen => st.toggle_fullscreen = true,
-        Cmd::SetTheme(t) => b.settings.appearance.theme = t,
+        Cmd::SetTheme(t) => {
+            b.settings.appearance.theme = t;
+            b.settings.appearance.custom_theme = None;
+        }
+        Cmd::SetCustomTheme(f) => b.settings.appearance.custom_theme = f,
+        Cmd::OpenThemesFolder => st.open_themes_folder = true,
         Cmd::SetMode(m) => b.set_background_mode(m),
         Cmd::DiscardOthers => {
             let sel = b.tabs.strip.selected;
@@ -309,12 +342,13 @@ fn fmt_bytes(n: u64) -> String {
 pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, store: &Store, dl: &DownloadManager, now: i64, paint_content: impl FnOnce(&egui::Painter, Rect)) -> Rect {
     st.icons_used.clear();
     // Re-apply the egui style whenever the theme or accent changed (palette, menu, settings).
-    let look = (b.settings.appearance.theme, b.settings.appearance.accent);
-    if st.applied_look != Some(look) {
-        apply_theme(ui.ctx(), b);
+    let look = (b.settings.appearance.theme, b.settings.appearance.accent, b.settings.appearance.custom_theme.clone(), st.theme_gen);
+    if st.applied_look.as_ref() != Some(&look) {
+        let custom = custom_colors(ui.ctx(), b, st);
+        apply_theme(ui.ctx(), b, custom);
         st.applied_look = Some(look);
     }
-    let p = pal(ui, b);
+    let p = pal(ui, b, st);
     let (tab_h, bar_h) = density_px(b.settings.appearance.density);
     let selected = b.tabs.strip.selected;
 
@@ -951,12 +985,48 @@ fn menu_button(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>
             }
         }
         ui.separator();
+        ui.label(egui::RichText::new("Custom theme").strong().color(p.subtle).small());
+        if ui.radio(b.settings.appearance.custom_theme.is_none(), "Built-in").clicked() {
+            b.settings.appearance.custom_theme = None;
+        }
+        let mut chosen: Option<String> = None;
+        for e in &st.themes {
+            let sel = b.settings.appearance.custom_theme.as_deref() == Some(e.file.as_str());
+            let mut tip = String::new();
+            if !e.theme.author.is_empty() {
+                tip.push_str(&format!("by {}\n", e.theme.author));
+            }
+            if let Some(err) = &e.error {
+                tip.push_str(&format!("Error: {err}\n"));
+            }
+            for w in e.theme.warnings.iter().take(6) {
+                tip.push_str(&format!("- {w}\n"));
+            }
+            let label = if e.error.is_some() { format!("{} (unusable)", e.display_name()) } else { e.display_name().to_string() };
+            let r = ui.add_enabled(e.error.is_none(), egui::RadioButton::new(sel, label));
+            let r = if tip.is_empty() { r } else { r.on_hover_text(tip.trim_end()) };
+            if r.clicked() {
+                chosen = Some(e.file.clone());
+            }
+        }
+        if let Some(f) = chosen {
+            b.settings.appearance.custom_theme = Some(f);
+        }
+        ui.horizontal(|ui| {
+            if ui.small_button("Open themes folder").clicked() {
+                st.open_themes_folder = true;
+            }
+            if ui.small_button("Reload").clicked() {
+                st.reload_themes = true;
+            }
+        });
+        ui.separator();
         ui.label(egui::RichText::new("Appearance").strong().color(p.subtle).small());
         ui.horizontal(|ui| {
             for (t, l) in [(Theme::System, "System"), (Theme::Light, "Light"), (Theme::Dark, "Dark")] {
                 if ui.selectable_label(b.settings.appearance.theme == t, l).clicked() {
                     b.settings.appearance.theme = t;
-                    apply_theme(ui.ctx(), b);
+                    b.settings.appearance.custom_theme = None;
                 }
             }
         });
@@ -972,7 +1042,6 @@ fn menu_button(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>
             ui.label("Accent colour");
             if ui.color_edit_button_srgb(&mut rgb).changed() {
                 b.settings.appearance.accent = rgb;
-                apply_theme(ui.ctx(), b);
             }
         });
         ui.separator();
@@ -1098,7 +1167,7 @@ fn command_palette(ctx: &egui::Context, st: &mut UiState, b: &mut Browser<ServoE
             st.palette_open = false;
         }
     });
-    let all = command_list(b);
+    let all = command_list(b, st);
     let mut scored: Vec<(i32, usize)> = all.iter().enumerate().filter_map(|(i, (l, _))| if st.palette_text.is_empty() { Some((-(i as i32), i)) } else { fuzzy(&st.palette_text, l).map(|s| (s, i)) }).collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     scored.truncate(9);
@@ -1327,4 +1396,12 @@ mod tests {
         assert!(fuzzy("zzz", "Theme: dark").is_none());
         assert!(fuzzy("new", "New tab").unwrap() > fuzzy("new", "Reopen closed tab (new)").unwrap_or(0) - 1);
     }
+}
+
+/// Open a folder in the system file manager.
+pub fn reveal_dir(dir: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(dir).spawn();
+    #[cfg(not(target_os = "macos"))]
+    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }

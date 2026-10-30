@@ -1,0 +1,17 @@
+/**
+ * @name Midnight
+ * @author BrowseRust
+ * @version 1.0.0
+ * @description Deep blue-black with a teal accent.
+*/
+
+:root {
+    --bp-strip:   #0b0d12;
+    --bp-bar:     #161a23;
+    --bp-surface: #10131a;
+    --bp-text:    #e6eaf2;
+    --bp-subtle:  #8b94a7;
+    --bp-border:  #262c3a;
+    --bp-hover:   #202636;
+    --bp-accent:  #2dd4bf;
+}

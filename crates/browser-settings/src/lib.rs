@@ -103,11 +103,14 @@ pub struct Appearance {
     pub accent: [u8; 3],
     pub density: Density,
     pub sidebar_collapsed: bool,
+    /// File name of the selected custom theme in the profile's `themes/` folder.
+    #[serde(default)]
+    pub custom_theme: Option<String>,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { theme: Theme::System, accent: [0x4F, 0x7C, 0xFF], density: Density::Comfortable, sidebar_collapsed: false }
+        Self { theme: Theme::System, accent: [0x4F, 0x7C, 0xFF], density: Density::Comfortable, sidebar_collapsed: false, custom_theme: None }
     }
 }
 
@@ -208,6 +211,14 @@ mod tests {
         assert_eq!(s.mode_for_host(Some("other.org")), BackgroundMode::SmartPause);
         assert!(s.refresh_on_return_for_host(Some("a.b.example.com")));
         assert_eq!(s.mode_for_host(None), BackgroundMode::SmartPause);
+    }
+
+    #[test]
+    fn settings_files_from_before_custom_themes_still_load() {
+        let old = r#"{"appearance":{"theme":"Dark","accent":[1,2,3],"density":"Compact","sidebar_collapsed":true}}"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.appearance.custom_theme, None);
+        assert!(s.appearance.sidebar_collapsed);
     }
 
     #[test]

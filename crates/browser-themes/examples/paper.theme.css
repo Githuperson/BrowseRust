@@ -1,0 +1,12 @@
+/**
+ * @name Paper
+ * @author BrowseRust
+ * @version 1.0.0
+ * @description Warm off-white with an orange accent.
+*/
+
+:root {
+    --bp-bar:    #fbf8f3;
+    --bp-accent: #e8590c;
+    /* Everything not set here (strip, surface, text, border, hover) is derived. */
+}

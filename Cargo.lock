@@ -856,6 +856,7 @@ dependencies = [
  "browser-settings",
  "browser-storage",
  "browser-tabs",
+ "browser-themes",
  "egui",
  "egui-winit",
  "egui_glow",
@@ -889,6 +890,10 @@ dependencies = [
  "browser-settings",
  "url",
 ]
+
+[[package]]
+name = "browser-themes"
+version = "0.1.0"
 
 [[package]]
 name = "bs58"

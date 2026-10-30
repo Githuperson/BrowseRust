@@ -94,6 +94,8 @@ struct Running {
     browser: Browser<ServoEngine>,
     ui: ui::UiState,
     store: Store,
+    themes: browser_themes::ThemeStore,
+    last_theme_check: Instant,
     downloads: Arc<browser_downloads::DownloadManager>,
     session: Option<SessionStore>,
     settings_path: Option<PathBuf>,
@@ -197,10 +199,15 @@ impl App {
         }
 
         let egui_ctx = egui::Context::default();
-        ui::apply_theme(&egui_ctx, &browser);
         let egui_winit = egui_winit::State::new(egui_ctx.clone(), egui::ViewportId::ROOT, el, Some(window.scale_factor() as f32), window.theme(), None);
         let painter = egui_glow::Painter::new(window_ctx.glow_gl_api(), "", None, false).expect("egui painter");
+        let mut themes = browser_themes::ThemeStore::new(dir.join("themes"));
+        if !args.private {
+            let _ = themes.ensure_examples();
+        }
         let mut ui_state = ui::UiState::default();
+        ui_state.themes = themes.scan();
+        ui_state.theme_dir = themes.dir().to_path_buf();
         if crashed {
             ui_state.toast("The browser did not close cleanly last time; your tabs were restored.");
         }
@@ -216,6 +223,8 @@ impl App {
             browser,
             ui: ui_state,
             store,
+            themes,
+            last_theme_check: Instant::now(),
             downloads,
             session,
             settings_path,
@@ -320,6 +329,20 @@ impl Running {
             if let Some(s) = &self.session {
                 let _ = self.browser.save_session(s);
             }
+        }
+
+        // Live theme reload: edits to files in <profile>/themes apply as soon as they are saved.
+        if now.duration_since(self.last_theme_check) > Duration::from_millis(1000) || std::mem::take(&mut self.ui.reload_themes) {
+            self.last_theme_check = now;
+            if self.themes.changed() {
+                self.ui.themes = self.themes.scan();
+                self.ui.theme_gen += 1;
+                self.ui.toast("Themes reloaded");
+            }
+        }
+        if std::mem::take(&mut self.ui.open_themes_folder) {
+            let _ = std::fs::create_dir_all(self.themes.dir());
+            ui::reveal_dir(self.themes.dir());
         }
 
         // 1. Servo paints the selected tab into its offscreen framebuffer.

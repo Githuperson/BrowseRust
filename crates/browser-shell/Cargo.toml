@@ -22,6 +22,7 @@ browser-network.workspace = true
 browser-security.workspace = true
 browser-storage.workspace = true
 browser-downloads.workspace = true
+browser-themes.workspace = true
 browser-session.workspace = true
 browser-tabs.workspace = true
 browser-engine.workspace = true
