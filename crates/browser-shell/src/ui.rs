@@ -18,6 +18,67 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use url::Url;
 
+/// An image from a theme, possibly animated.
+struct Anim {
+    frames: Vec<egui::TextureHandle>,
+    delays: Vec<u32>,
+    w: f32,
+    h: f32,
+}
+
+impl Anim {
+    fn from_decoded(ctx: &egui::Context, name: &str, d: browser_themes::Decoded) -> Self {
+        let mut frames = Vec::new();
+        let mut delays = Vec::new();
+        for (i, f) in d.frames.iter().enumerate() {
+            let img = egui::ColorImage::from_rgba_unmultiplied([d.width as usize, d.height as usize], &f.rgba);
+            frames.push(ctx.load_texture(format!("theme-{name}-{i}"), img, egui::TextureOptions::LINEAR));
+            delays.push(f.delay_ms.max(20));
+        }
+        Anim { frames, delays, w: d.width as f32, h: d.height as f32 }
+    }
+
+    /// Texture to show at time `t` (seconds) and how long until it changes.
+    fn at(&self, t: f64) -> (egui::TextureId, Option<Duration>) {
+        if self.frames.len() <= 1 {
+            return (self.frames[0].id(), None);
+        }
+        let total: u32 = self.delays.iter().sum();
+        let mut ms = ((t * 1000.0) as u64 % total as u64) as u32;
+        for (i, d) in self.delays.iter().enumerate() {
+            if ms < *d {
+                return (self.frames[i].id(), Some(Duration::from_millis((*d - ms) as u64)));
+            }
+            ms -= d;
+        }
+        (self.frames[0].id(), Some(Duration::from_millis(50)))
+    }
+}
+
+#[derive(Default, PartialEq, Clone, Copy)]
+enum AssetStatus {
+    #[default]
+    Idle,
+    NeedsConsent,
+    Fetching,
+    Ready,
+    Failed,
+}
+
+type AssetMsg = (String, Result<browser_themes::Loaded, String>);
+
+#[derive(Default)]
+struct ThemeAssets {
+    key: Option<(String, u64)>,
+    status: AssetStatus,
+    urls: Vec<String>,
+    background: Option<Anim>,
+    home: Option<Anim>,
+    errors: Vec<String>,
+    declined: bool,
+    rx: Option<std::sync::mpsc::Receiver<AssetMsg>>,
+}
+
 const ZOOM_STEPS: [f32; 17] = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0];
 
 #[derive(Default)]
@@ -49,6 +110,9 @@ pub struct UiState {
     /// Custom themes found in the profile's themes folder.
     pub themes: Vec<ThemeEntry>,
     pub theme_gen: u64,
+    /// Incremented by the shell whenever the themes folder is re-read.
+    pub themes_scan: u64,
+    assets: ThemeAssets,
     pub theme_dir: std::path::PathBuf,
     pub open_themes_folder: bool,
     pub reload_themes: bool,
@@ -341,6 +405,7 @@ fn fmt_bytes(n: u64) -> String {
 /// Draw the whole UI. `paint_content` receives the rectangle reserved for web content.
 pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, store: &Store, dl: &DownloadManager, now: i64, paint_content: impl FnOnce(&egui::Painter, Rect)) -> Rect {
     st.icons_used.clear();
+    pump_theme_assets(ui.ctx(), st, b);
     // Re-apply the egui style whenever the theme or accent changed (palette, menu, settings).
     let look = (b.settings.appearance.theme, b.settings.appearance.accent, b.settings.appearance.custom_theme.clone(), st.theme_gen);
     if st.applied_look.as_ref() != Some(&look) {
@@ -383,7 +448,15 @@ pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, s
 
     // ---------------------------------------------------------------- sidebar
     if !b.settings.appearance.sidebar_collapsed {
-        egui::Panel::left("sidebar").exact_size(224.0).frame(egui::Frame::NONE.fill(p.strip)).show(ui, |ui| sidebar(ui, st, b, store, &p));
+        egui::Panel::left("sidebar").exact_size(224.0).frame(egui::Frame::NONE.fill(p.strip)).show(ui, |ui| {
+            if b.settings.appearance.theme_bg_sidebar {
+                if let Some(a) = &st.assets.background {
+                    let (tex, _) = a.at(0.0);
+                    paint_cover(ui.painter(), ui.max_rect(), tex, a.w, a.h, (b.settings.appearance.theme_bg_dim + 0.15).min(0.95));
+                }
+            }
+            sidebar(ui, st, b, store, &p)
+        });
     }
 
     // -------------------------------------------------------------------- tabs
@@ -469,6 +542,32 @@ pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, s
         });
     }
 
+    // ------------------------------------------------------ theme download consent
+    if st.assets.status == AssetStatus::NeedsConsent && !st.assets.declined {
+        let name = st.assets.key.as_ref().map(|k| k.0.clone()).unwrap_or_default();
+        let theme_name = st.themes.iter().find(|e| e.file == name).map(|e| e.display_name().to_string()).unwrap_or(name.clone());
+        egui::Panel::top("theme_consent").exact_size(42.0).frame(egui::Frame::NONE.fill(p.surface)).show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.add_space(14.0);
+                let n = st.assets.urls.len();
+                let r = ui.label(egui::RichText::new(format!("Theme \"{theme_name}\" wants to download {n} file(s) from {}", hosts_of(&st.assets.urls))).strong());
+                r.on_hover_text(st.assets.urls.join("\n"));
+                if ui.button("Allow").clicked() {
+                    let fp = browser_themes::fingerprint(&st.assets.urls);
+                    b.settings.appearance.theme_remote_allowed.insert(name.clone(), fp);
+                    start_fetch(ui.ctx(), st, &name);
+                }
+                if ui.button("Not now").clicked() {
+                    st.assets.declined = true;
+                }
+                if ui.button("Never for themes").clicked() {
+                    b.settings.appearance.theme_remote_enabled = false;
+                    st.assets.declined = true;
+                }
+            });
+        });
+    }
+
     // ---------------------------------------------------- permission prompts
     if let Some(prompt) = selected.and_then(|t| b.engine.pending_permissions().into_iter().find(|p| p.tab == t)) {
         egui::Panel::top("permission").exact_size(40.0).frame(egui::Frame::NONE.fill(p.surface)).show(ui, |ui| {
@@ -517,6 +616,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, s
         content = rect;
         if on_ntp {
             ui.painter().rect_filled(rect, 0.0, p.bar);
+            if b.settings.appearance.theme_bg_new_tab {
+                if let Some(a) = &st.assets.background {
+                    let (tex, _) = a.at(0.0);
+                    paint_cover(ui.painter(), rect, tex, a.w, a.h, b.settings.appearance.theme_bg_dim);
+                }
+            }
             new_tab_page(ui, rect, st, b, store, &p);
         } else {
             paint_content(ui.painter(), rect);
@@ -531,6 +636,89 @@ pub fn show(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>, s
     windows(ui.ctx(), st, b, store, now);
     toast(ui.ctx(), st, &p);
     content
+}
+
+fn hosts_of(urls: &[String]) -> String {
+    let mut h: Vec<String> = urls.iter().filter_map(|u| Url::parse(u).ok().and_then(|u| u.host_str().map(str::to_owned))).collect();
+    h.sort();
+    h.dedup();
+    h.join(", ")
+}
+
+fn start_fetch(ctx: &egui::Context, st: &mut UiState, file: &str) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (dir, f) = (st.theme_dir.clone(), file.to_string());
+    let waker = ctx.clone();
+    std::thread::spawn(move || {
+        let mut cache = browser_themes::AssetCache::new(dir.join(".cache"));
+        // Testing aid only (not a setting): lets a theme point at a local server.
+        cache.allow_loopback = std::env::var_os("BROWSERUST_THEME_ALLOW_LOOPBACK").is_some();
+        let r = std::fs::read_to_string(dir.join(&f)).map_err(|e| e.to_string()).and_then(|src| browser_themes::load_remote(&src, &cache, true));
+        let _ = tx.send((f, r));
+        waker.request_repaint();
+    });
+    st.assets.rx = Some(rx);
+    st.assets.status = AssetStatus::Fetching;
+}
+
+/// Drive the selected theme's remote assets: ask for consent, download on approval,
+/// and turn the result into textures. Nothing is fetched without a stored approval
+/// whose fingerprint matches the theme's current URLs.
+fn pump_theme_assets(ctx: &egui::Context, st: &mut UiState, b: &mut Browser<ServoEngine>) {
+    let info = b.settings.appearance.custom_theme.as_ref().and_then(|f| st.themes.iter().find(|e| &e.file == f && e.error.is_none())).map(|e| (e.file.clone(), e.theme.remote_urls()));
+    let key = info.as_ref().map(|(f, _)| (f.clone(), st.themes_scan));
+    if st.assets.key != key {
+        st.assets = ThemeAssets { key, ..Default::default() };
+        if let Some((file, urls)) = info {
+            if !urls.is_empty() && b.settings.appearance.theme_remote_enabled {
+                let fp = browser_themes::fingerprint(&urls);
+                st.assets.urls = urls;
+                if b.settings.appearance.theme_remote_allowed.get(&file) == Some(&fp) {
+                    start_fetch(ctx, st, &file);
+                } else {
+                    st.assets.status = AssetStatus::NeedsConsent;
+                }
+            }
+        }
+    }
+    let msg = st.assets.rx.as_ref().and_then(|rx| rx.try_recv().ok());
+    if let Some((file, res)) = msg {
+        st.assets.rx = None;
+        match res {
+            Ok(l) => {
+                st.assets.background = l.background.map(|d| Anim::from_decoded(ctx, "bg", d));
+                st.assets.home = l.home.map(|d| Anim::from_decoded(ctx, "home", d));
+                st.assets.errors = l.errors;
+                st.assets.status = AssetStatus::Ready;
+                if let Some(e) = st.themes.iter_mut().find(|e| e.file == file) {
+                    e.theme = l.theme; // variables from the imported stylesheet are now merged in
+                }
+                st.theme_gen += 1;
+                if l.downloaded > 0 {
+                    st.toast(format!("Theme files downloaded ({})", l.downloaded));
+                }
+            }
+            Err(e) => {
+                st.assets.errors = vec![e];
+                st.assets.status = AssetStatus::Failed;
+            }
+        }
+    }
+    if st.assets.status == AssetStatus::Fetching {
+        ctx.request_repaint_after(Duration::from_millis(150));
+    }
+}
+
+/// Paint `tex` so it covers `rect` (centre-cropped), then darken by `dim`.
+fn paint_cover(painter: &egui::Painter, rect: Rect, tex: egui::TextureId, iw: f32, ih: f32, dim: f32) {
+    if iw <= 0.0 || ih <= 0.0 {
+        return;
+    }
+    let scale = (rect.width() / iw).max(rect.height() / ih);
+    let (fw, fh) = (rect.width() / (iw * scale), rect.height() / (ih * scale));
+    let uv = Rect::from_min_max(pos2((1.0 - fw) / 2.0, (1.0 - fh) / 2.0), pos2((1.0 + fw) / 2.0, (1.0 + fh) / 2.0));
+    painter.with_clip_rect(rect).image(tex, rect, uv, Color32::WHITE);
+    painter.rect_filled(rect, 0.0, Color32::from_black_alpha((dim.clamp(0.0, 1.0) * 255.0) as u8));
 }
 
 fn toast(ctx: &egui::Context, st: &mut UiState, p: &Palette) {
@@ -1020,6 +1208,32 @@ fn menu_button(ui: &mut egui::Ui, st: &mut UiState, b: &mut Browser<ServoEngine>
                 st.reload_themes = true;
             }
         });
+        ui.label(egui::RichText::new("Theme images").strong().color(p.subtle).small());
+        ui.checkbox(&mut b.settings.appearance.theme_remote_enabled, "Allow themes to download images and styles (each theme asks first)");
+        ui.checkbox(&mut b.settings.appearance.theme_bg_new_tab, "Background image on new-tab page");
+        ui.checkbox(&mut b.settings.appearance.theme_bg_sidebar, "Background image on sidebar");
+        ui.checkbox(&mut b.settings.appearance.theme_hero, "Home image on new-tab page");
+        ui.add(egui::Slider::new(&mut b.settings.appearance.theme_bg_dim, 0.0..=0.95).text("Darken background"));
+        let status = match st.assets.status {
+            AssetStatus::Idle => "",
+            AssetStatus::NeedsConsent => "Waiting for your permission to download this theme's files",
+            AssetStatus::Fetching => "Downloading theme files...",
+            AssetStatus::Ready => "Theme files loaded",
+            AssetStatus::Failed => "Could not load theme files",
+        };
+        if !status.is_empty() {
+            ui.label(egui::RichText::new(status).small().color(p.subtle));
+        }
+        for e in st.assets.errors.iter().take(4) {
+            ui.label(egui::RichText::new(e).small().color(Color32::from_rgb(0xD9, 0x6A, 0x1E)));
+        }
+        if ui.small_button("Forget approvals and clear downloaded files").clicked() {
+            b.settings.appearance.theme_remote_allowed.clear();
+            let _ = std::fs::remove_dir_all(st.theme_dir.join(".cache"));
+            st.assets.key = None;
+            st.themes_scan += 1;
+            st.toast("Theme approvals cleared");
+        }
         ui.separator();
         ui.label(egui::RichText::new("Appearance").strong().color(p.subtle).small());
         ui.horizontal(|ui| {
@@ -1226,7 +1440,19 @@ fn new_tab_page(ui: &mut egui::Ui, rect: Rect, st: &mut UiState, b: &mut Browser
     let mut child = ui.new_child(UiBuilder::new().max_rect(area));
     let ui = &mut child;
     ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new("BrowseRust").size(38.0).strong());
+        let hero = if b.settings.appearance.theme_hero { st.assets.home.as_ref().map(|a| (a.at(ui.input(|i| i.time)), a.w, a.h)) } else { None };
+        match hero {
+            Some(((tex, next), w, h)) => {
+                let scale = (120.0 / h).min(220.0 / w).min(1.0f32.max(120.0 / h));
+                ui.add(egui::Image::new((tex, vec2(w * scale, h * scale))));
+                if let Some(d) = next {
+                    ui.ctx().request_repaint_after(d);
+                }
+            }
+            None => {
+                ui.label(egui::RichText::new("BrowseRust").size(38.0).strong());
+            }
+        }
         ui.label(egui::RichText::new("Fast, light, and quiet in the background").color(p.subtle));
         ui.add_space(18.0);
         let resp = ui.add(egui::TextEdit::singleline(&mut st.ntp_text).hint_text("Search or enter address").desired_width(w * 0.85).margin(egui::Margin::symmetric(18, 12)));

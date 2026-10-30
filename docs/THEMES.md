@@ -24,14 +24,31 @@ Colours may be `#rgb`, `#rrggbb`, `rgb()`, `hsl()` or a bare `r, g, b` triple (a
 
 Anything missing is derived from the bar colour (dark or light is decided from its luminance), so a theme with only `--bp-bar` and `--bp-accent` is complete. A theme's accent replaces the accent-colour setting while it is selected.
 
-## Safety
-Nothing is fetched. `@import` and `url(...)` (images) are ignored and listed as warnings (hover a theme in the menu). Other rules (class selectors, `@font-face`, ...) are ignored and listed. Files over 256 KiB are rejected. Parsing never panics (tested on hostile input).
+## Remote files: imports and images (with your permission)
+Many themes (e.g. BetterDiscord's Dark Matter) `@import` a stylesheet and reference images. These are supported, but **never silently**:
+- When you select such a theme, a bar lists how many files it wants and from which hosts (hover for the full URLs): **Allow / Not now / Never for themes**.
+- Approval is stored per theme together with a fingerprint of its URLs. If the file is edited to reference different URLs, you are asked again.
+- Settings (menu > Custom theme > Theme images): master switch for theme downloads; show the background on the new-tab page and/or sidebar; show the home image; background darkening; "Forget approvals and clear downloaded files".
+- What is applied: variables from the imported stylesheet are merged into the palette (the theme's own variables win); `--background-image` (or `--bp-background-image`) becomes a centre-cropped, dimmed backdrop on the new-tab page and sidebar; `--home-image` (or `--bp-home-image`) replaces the title on the new-tab page and **animates if it is a GIF** (up to 64 frames).
+- Downloaded files are cached in `<profile>/themes/.cache` (64 MiB cap), so the theme works offline afterwards.
+
+### Rules the loader enforces (tested)
+- `https` only; no credentials in URLs; never `localhost`, private (10.x, 192.168.x, 172.16-31.x), link-local (e.g. cloud metadata 169.254.169.254) or other internal addresses; every redirect hop is re-checked; no cookies or auth are sent.
+- Size caps: stylesheets 256 KiB, images 8 MiB, source images up to 8192x8192 (then downscaled to 1600 px / 256 px for the home image), at most 4 imports. Images are accepted by **magic bytes** (PNG, JPEG, GIF, WebP); **SVG is refused**.
+- Imported stylesheets can add colour variables but **cannot trigger further downloads**: images are fetched only from URLs written in the theme file you approved. Imports of imports are not followed.
+- Only `:root` variables are used from imported CSS; the Discord selectors in it (and any other rules) are counted and ignored.
+
+## Safety (local parsing)
+Parsing never panics (tested on hostile input); files over 256 KiB are rejected; unused `url(...)` variables are ignored and listed as warnings (hover a theme in the menu).
 
 ## Verified
-Unit tests (16) plus your uploaded **Dark Matter** file: its name/author/version were read and it resolved to bar `#161921`, surface `#101218`, strip `#0c0e12`, accent `37,172,232`. On a running window: selecting it recoloured the UI, and editing the file while the browser ran recoloured it live.
+- 23 unit tests + 3 integration tests (local server): nothing is requested without permission; with it, the stylesheet merges, images decode and GIF frames are kept; SVG, oversized files, redirects to private IPs and loopback are refused; a stylesheet cannot smuggle in an extra download; cached files load with the network off.
+- On a running window with your real Dark Matter file (URLs rewritten to a local server): consent bar shown before any request; after **Allow** the background, sidebar backdrop and an animating GIF hero appeared; relaunching with the server down loaded from cache without a prompt; editing the theme's image URL asked again.
+- **Not verified:** the real hosts (`discordstyles.github.io`, `i.imgur.com`) were unreachable from the test sandbox, so the real `base.css` and images were never fetched or inspected. Their actual contents (and how much of them maps onto this UI) are unknown.
 
 ## Limits
-- Discord-specific selectors and the theme's background images/GIFs are not applied (the browser has no such elements; images are never fetched).
+- Discord-specific selectors in a theme do not apply (the browser has no such elements). Only the colour variables, background image and home image are used.
+- The background shows on the new-tab page and sidebar, not behind the toolbar or tab strip (those stay opaque so text stays legible).
 - Fonts, sizes, spacing and shapes are not themeable yet; colours only.
 - Colours only light/dark per theme: no separate per-site themes.
 - Tested on Linux only.

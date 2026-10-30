@@ -337,6 +337,7 @@ impl Running {
             if self.themes.changed() {
                 self.ui.themes = self.themes.scan();
                 self.ui.theme_gen += 1;
+                self.ui.themes_scan += 1;
                 self.ui.toast("Themes reloaded");
             }
         }
