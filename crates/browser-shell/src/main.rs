@@ -4,7 +4,9 @@
 //! `OffscreenRenderingContext`; egui draws the interface into the window's GL
 //! context and a paint callback blits the web content into the reserved rectangle.
 
+mod icons;
 mod input;
+mod theme;
 mod ui;
 
 use browser_app::Browser;
@@ -92,6 +94,7 @@ struct Running {
     browser: Browser<ServoEngine>,
     ui: ui::UiState,
     store: Store,
+    downloads: Arc<browser_downloads::DownloadManager>,
     session: Option<SessionStore>,
     settings_path: Option<PathBuf>,
     mods: ModifiersState,
@@ -111,6 +114,13 @@ struct App {
     args: Args,
     proxy: EventLoopProxy<()>,
     state: Option<Running>,
+}
+
+fn downloads_dir() -> PathBuf {
+    std::env::var_os("XDG_DOWNLOAD_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Downloads")))
+        .unwrap_or_else(|| std::env::temp_dir().join("browserust-downloads"))
 }
 
 fn unix_now() -> i64 {
@@ -158,6 +168,9 @@ impl App {
             }),
         );
         let mut cfg = cfg;
+        let downloads = Arc::new(browser_downloads::DownloadManager::new(downloads_dir()));
+        cfg.downloads = Some(downloads.clone());
+        cfg.waker = Some(Box::new(Waker(self.proxy.clone())));
         cfg.permissions = Rc::new(RefCell::new(if args.private {
             browser_security::PermissionStore::in_memory()
         } else {
@@ -189,7 +202,7 @@ impl App {
         let painter = egui_glow::Painter::new(window_ctx.glow_gl_api(), "", None, false).expect("egui painter");
         let mut ui_state = ui::UiState::default();
         if crashed {
-            ui_state.status = "The browser did not close cleanly last time; your tabs were restored.".into();
+            ui_state.toast("The browser did not close cleanly last time; your tabs were restored.");
         }
         ui_state.focus_address = args.urls.is_empty();
 
@@ -203,6 +216,7 @@ impl App {
             browser,
             ui: ui_state,
             store,
+            downloads,
             session,
             settings_path,
             mods: ModifiersState::empty(),
@@ -256,6 +270,14 @@ impl Running {
                 }
             }
             _ if ctrl && ch == "l" => self.ui.focus_address = true,
+            _ if ctrl && ch == "k" => ui::shortcut("palette", &mut self.ui, &mut self.browser, &self.store),
+            _ if ctrl && ch == "f" => ui::shortcut("find", &mut self.ui, &mut self.browser, &self.store),
+            _ if ctrl && ch == "b" => ui::shortcut("sidebar", &mut self.ui, &mut self.browser, &self.store),
+            _ if ctrl && ch == "j" => ui::shortcut("downloads", &mut self.ui, &mut self.browser, &self.store),
+            _ if ctrl && (ch == "=" || ch == "+") => ui::shortcut("zoom_in", &mut self.ui, &mut self.browser, &self.store),
+            _ if ctrl && ch == "-" => ui::shortcut("zoom_out", &mut self.ui, &mut self.browser, &self.store),
+            _ if ctrl && ch == "0" => ui::shortcut("zoom_reset", &mut self.ui, &mut self.browser, &self.store),
+            _ if matches!(key, Key::Named(NamedKey::F11)) => ui::shortcut("fullscreen", &mut self.ui, &mut self.browser, &self.store),
             _ if ctrl && ch == "r" => self.browser.reload(),
             _ if ctrl && matches!(key, Key::Named(NamedKey::Tab)) => {
                 let ids: Vec<TabId> = self.browser.tabs.strip.visible().map(|t| t.id).collect();
@@ -312,9 +334,9 @@ impl Running {
         let ppp = self.egui_ctx.pixels_per_point();
         let mut content = Rect::NOTHING;
         let out = {
-            let (ctx, browser, st, store) = (&self.egui_ctx, &mut self.browser, &mut self.ui, &self.store);
+            let (ctx, browser, st, store, dl) = (&self.egui_ctx, &mut self.browser, &mut self.ui, &self.store, &*self.downloads);
             ctx.run_ui(raw, |ui| {
-                content = ui::show(ui, st, browser, store, unix, |painter, rect| {
+                content = ui::show(ui, st, browser, store, dl, unix, |painter, rect| {
                     if let Some(blit) = blit.clone() {
                         let cb = egui_glow::CallbackFn::new(move |info, p| {
                             let vp = info.viewport_in_pixels();
@@ -330,6 +352,10 @@ impl Running {
             })
         };
         self.egui_winit.handle_platform_output(&self.window, out.platform_output);
+        if std::mem::take(&mut self.ui.toggle_fullscreen) {
+            let fs = self.window.fullscreen().is_some();
+            self.window.set_fullscreen(if fs { None } else { Some(winit::window::Fullscreen::Borderless(None)) });
+        }
 
         // 3. Keep the web content the size of its rectangle.
         if content.width() > 1.0 && content.height() > 1.0 {

@@ -15,6 +15,7 @@ Rust workspace. Servo is the only rendering engine and is reachable only through
 | `browser-app` | `Browser` orchestrator, omnibox resolver | done, tested with `MockEngine` |
 | `servo-integration` | `ServoEngine` over Servo 0.7.0 | done; one end-to-end test against real Servo |
 | `browser-storage` | history + bookmarks on SQLite (frecency suggestions, Netscape-HTML import/export, in-memory for private mode); `SecretStore` trait with OS-keyring impl | storage tested; **keyring backend compiles but is untested (no keychain here)** |
+| `browser-downloads` | Content-Disposition/MIME classification, redirect-safe probe (cookies never cross origins), threaded streaming manager (`.part` + rename, no overwrite, cancel) | done; 9 tests + real-Servo e2e |
 | `browser-shell` (binary `browserust`) | winit window + egui UI + Servo content blit: tab strip with lifecycle dots, toolbar, address bar with history suggestions, workspaces, menus (background modes, per-site exceptions, theme/density/accent), memory+network panel, history/bookmarks windows, session restore, shortcuts | **runs**; verified under Xvfb with screenshots and scripted input (Ctrl+T, typing, Enter, tab switch, menu). Not run on macOS or a real GPU |
 | extensions, downloads manager, devtools, password manager UI/autofill, PDF | | **not built** (see ROADMAP) |
 

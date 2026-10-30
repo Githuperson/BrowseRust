@@ -847,6 +847,7 @@ version = "0.1.0"
 dependencies = [
  "browser-app",
  "browser-core",
+ "browser-downloads",
  "browser-engine",
  "browser-memory",
  "browser-network",
