@@ -894,6 +894,11 @@ dependencies = [
 [[package]]
 name = "browser-themes"
 version = "0.1.0"
+dependencies = [
+ "image",
+ "ureq",
+ "url",
+]
 
 [[package]]
 name = "bs58"

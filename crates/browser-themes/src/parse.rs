@@ -31,11 +31,25 @@ pub struct Theme {
     /// `@media (prefers-color-scheme: dark)` / `light` overrides, if the theme has them.
     pub dark_variant: Option<UiColors>,
     pub light_variant: Option<UiColors>,
+    /// `@import` URLs found in the file (fetched only with the user's consent).
+    pub imports: Vec<String>,
+    /// `--background-image` / `--bp-background-image`: absolute https URL.
+    pub background_image: Option<String>,
+    /// `--home-image` / `--bp-home-image`: absolute https URL.
+    pub home_image: Option<String>,
     /// Things that were deliberately not honoured (remote imports, images, other rules).
     pub warnings: Vec<String>,
 }
 
 impl Theme {
+    /// Every remote file this theme would download, in a stable order.
+    pub fn remote_urls(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.imports.iter().cloned().chain(self.background_image.clone()).chain(self.home_image.clone()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     /// Colours to use given the system's current appearance.
     pub fn resolve(&self, system_dark: bool) -> Option<UiColors> {
         if system_dark { self.dark_variant.or(self.colors).or(self.light_variant) } else { self.light_variant.or(self.colors).or(self.dark_variant) }
@@ -158,6 +172,8 @@ fn matching_brace(s: &str, open: usize) -> Option<usize> {
 
 #[derive(Default)]
 struct Collected {
+    imports: Vec<String>,
+    ignored_rules: usize,
     base: Vars,
     dark: Vars,
     light: Vars,
@@ -180,7 +196,10 @@ fn scan(css: &str, variant: Option<bool>, out: &mut Collected, depth: u32) {
             (Some(s), o) if o.is_none_or(|o| s < o) => {
                 let stmt = rest_trim[..s].trim();
                 if stmt.starts_with("@import") {
-                    out.warnings.push("@import ignored: nothing is fetched from the network".into());
+                    match import_url(stmt) {
+                        Some(u) => out.imports.push(u),
+                        None => out.warnings.push(format!("@import not understood: {}", truncate(stmt))),
+                    }
                 } else if !stmt.is_empty() {
                     out.warnings.push(format!("ignored: {}", truncate(stmt)));
                 }
@@ -207,10 +226,10 @@ fn scan(css: &str, variant: Option<bool>, out: &mut Collected, depth: u32) {
                     if v.is_some() || variant.is_some() {
                         scan(body, v.or(variant), out, depth + 1);
                     } else {
-                        out.warnings.push(format!("ignored: {}", truncate(prelude)));
+                        out.ignored_rules += 1;
                     }
                 } else if low.starts_with('@') {
-                    out.warnings.push(format!("ignored: {}", truncate(prelude)));
+                    out.ignored_rules += 1;
                 } else if prelude.split(',').any(|s| matches!(s.trim().to_ascii_lowercase().as_str(), ":root" | "html" | ":host")) {
                     let target = match variant {
                         Some(true) => &mut out.dark,
@@ -226,13 +245,31 @@ fn scan(css: &str, variant: Option<bool>, out: &mut Collected, depth: u32) {
                         }
                     }
                 } else {
-                    out.warnings.push(format!("rule not applicable to the browser UI: {}", truncate(prelude)));
+                    out.ignored_rules += 1;
                 }
                 i += o + (close - o) + 1;
             }
             _ => break,
         }
     }
+}
+
+/// URL from `@import url('x')`, `@import url(x)` or `@import "x"`; trailing media queries ignored.
+fn import_url(stmt: &str) -> Option<String> {
+    let rest = stmt.trim_start_matches("@import").trim();
+    css_url(rest).or_else(|| {
+        let q = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        rest[1..].split(q).next().map(str::to_string)
+    })
+}
+
+/// The URL inside the first `url(...)` of a CSS value (quotes optional).
+pub(crate) fn css_url(v: &str) -> Option<String> {
+    let i = v.find("url(")?;
+    let inner = &v[i + 4..];
+    let end = inner.find(')')?;
+    let u = inner[..end].trim().trim_matches(|c| c == '"' || c == '\'').trim();
+    (!u.is_empty()).then(|| u.to_string())
 }
 
 fn truncate(s: &str) -> String {
@@ -322,23 +359,55 @@ fn colors_from(vars: &Vars, inherit: Option<&Vars>) -> Option<UiColors> {
     })
 }
 
+const BG_IMAGE: &[&str] = &["--bp-background-image", "--background-image", "--bg-image"];
+const HOME_IMAGE: &[&str] = &["--bp-home-image", "--home-image"];
+
+fn pick_image(vars: &Vars, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|n| resolve(vars, n, 0)).and_then(|v| css_url(&v)).filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+}
+
 /// Parse a theme file. Never panics; returns `Err` only for oversized input.
 pub fn parse_theme(src: &str) -> Result<Theme, String> {
+    parse_theme_with(src, &[])
+}
+
+/// Like [`parse_theme`], with the text of already-fetched `@import`ed stylesheets.
+/// Imported variables are applied first, so the theme's own declarations win.
+pub fn parse_theme_with(src: &str, imported: &[String]) -> Result<Theme, String> {
     if src.len() > crate::MAX_THEME_BYTES {
         return Err(format!("theme file is larger than {} KiB", crate::MAX_THEME_BYTES / 1024));
     }
     let mut t = Theme::default();
     metadata(src, &mut t);
-    let css = strip_comments(src);
+    let mut css = String::new();
+    for i in imported.iter().take(8) {
+        css.push_str(&strip_comments(i));
+        css.push('\n');
+    }
+    css.push_str(&strip_comments(src));
     let mut c = Collected::default();
     scan(&css, None, &mut c, 0);
+    c.imports.dedup();
+    t.imports = c.imports.clone();
+    // Imported stylesheets may themselves `@import`; those are never followed.
+    t.background_image = pick_image(&c.base, BG_IMAGE);
+    t.home_image = pick_image(&c.base, HOME_IMAGE);
 
-    // `url(...)` values are never loaded.
-    let mut image_vars: Vec<&String> = c.base.iter().chain(c.dark.iter()).chain(c.light.iter()).filter(|(_, v)| v.contains("url(")).map(|(k, _)| k).collect();
+    // Image variables other than the two we apply are never loaded.
+    let used: Vec<&str> = BG_IMAGE.iter().chain(HOME_IMAGE.iter()).copied().collect();
+    let mut image_vars: Vec<&String> = c.base.iter().chain(c.dark.iter()).chain(c.light.iter()).filter(|(k, v)| v.contains("url(") && !used.contains(&k.as_str())).map(|(k, _)| k).collect();
     image_vars.sort();
     image_vars.dedup();
     for k in image_vars {
-        c.warnings.push(format!("{k}: url(...) ignored: images are never fetched by themes"));
+        c.warnings.push(format!("{k}: url(...) not used (only background and home images are applied)"));
+    }
+    if c.ignored_rules > 0 {
+        c.warnings.push(format!("{} other rule(s) ignored: selectors for other apps do not apply to the browser UI", c.ignored_rules));
+    }
+    for u in &t.imports {
+        if !imported.iter().any(|_| true) {
+            c.warnings.push(format!("@import not loaded yet (needs your permission): {u}"));
+        }
     }
 
     t.colors = colors_from(&c.base, None);
@@ -397,8 +466,10 @@ mod tests {
     #[test]
     fn remote_content_is_reported_not_loaded() {
         let t = parse_theme(DISCORD_STYLE).unwrap();
-        assert!(t.warnings.iter().any(|w| w.contains("@import ignored")), "{:?}", t.warnings);
-        assert!(t.warnings.iter().any(|w| w.contains("--background-image") && w.contains("never fetched")), "{:?}", t.warnings);
+        assert_eq!(t.imports, vec!["https://example.com/src/base.css".to_string()]);
+        assert!(t.warnings.iter().any(|w| w.contains("@import not loaded yet")), "{:?}", t.warnings);
+        assert_eq!(t.background_image.as_deref(), Some("https://example.com/bg.png"));
+        assert_eq!(t.remote_urls().len(), 2);
     }
 
     #[test]
@@ -431,8 +502,7 @@ mod tests {
     fn unrelated_rules_are_ignored_and_reported() {
         let t = parse_theme(".sidebar { color: red } @font-face { src: url(x) } :root{--bp-bar:#222}").unwrap();
         assert!(t.colors.is_some());
-        assert!(t.warnings.iter().any(|w| w.contains(".sidebar")));
-        assert!(t.warnings.iter().any(|w| w.contains("@font-face")));
+        assert!(t.warnings.iter().any(|w| w.contains("2 other rule(s) ignored")), "{:?}", t.warnings);
     }
 
     #[test]

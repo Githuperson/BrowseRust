@@ -106,11 +106,37 @@ pub struct Appearance {
     /// File name of the selected custom theme in the profile's `themes/` folder.
     #[serde(default)]
     pub custom_theme: Option<String>,
+    /// Master switch: may themes download images and imported stylesheets at all?
+    /// Even when on, each theme must be approved individually.
+    #[serde(default = "yes")]
+    pub theme_remote_enabled: bool,
+    /// Theme file -> fingerprint of the URLs the user approved. Editing a theme to add
+    /// URLs changes the fingerprint and asks again.
+    #[serde(default)]
+    pub theme_remote_allowed: BTreeMap<String, String>,
+    /// How much the theme's background image is darkened (0 = none, 1 = black).
+    #[serde(default = "default_dim")]
+    pub theme_bg_dim: f32,
+    #[serde(default = "yes")]
+    pub theme_bg_new_tab: bool,
+    #[serde(default = "yes")]
+    pub theme_bg_sidebar: bool,
+    /// Show the theme's "home" image (may be an animated GIF) on the new-tab page.
+    #[serde(default = "yes")]
+    pub theme_hero: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_dim() -> f32 {
+    0.55
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { theme: Theme::System, accent: [0x4F, 0x7C, 0xFF], density: Density::Comfortable, sidebar_collapsed: false, custom_theme: None }
+        Self { theme: Theme::System, accent: [0x4F, 0x7C, 0xFF], density: Density::Comfortable, sidebar_collapsed: false, custom_theme: None, theme_remote_enabled: true, theme_remote_allowed: BTreeMap::new(), theme_bg_dim: 0.55, theme_bg_new_tab: true, theme_bg_sidebar: true, theme_hero: true }
     }
 }
 
@@ -219,6 +245,8 @@ mod tests {
         let s: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(s.appearance.custom_theme, None);
         assert!(s.appearance.sidebar_collapsed);
+        assert!(s.appearance.theme_remote_enabled && s.appearance.theme_remote_allowed.is_empty());
+        assert!((s.appearance.theme_bg_dim - 0.55).abs() < 1e-6);
     }
 
     #[test]

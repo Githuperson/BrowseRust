@@ -9,11 +9,15 @@
 //! and reported in [`Theme::warnings`]. Input size is capped and parsing never panics.
 
 mod color;
+mod images;
 mod parse;
+mod remote;
 mod store;
 
 pub use color::{Rgb, parse_color};
-pub use parse::{Theme, UiColors, parse_theme};
+pub use images::{Decoded, Frame, decode_image};
+pub use parse::{Theme, UiColors, parse_theme, parse_theme_with};
+pub use remote::{AssetCache, Loaded, fingerprint, is_allowed_url, load_remote};
 pub use store::{ThemeEntry, ThemeStore};
 
 /// Largest theme file accepted.
