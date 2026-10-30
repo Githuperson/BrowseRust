@@ -1,0 +1,13 @@
+[package]
+name = "browser-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.38", features = ["bundled"] }
+keyring = "4"
+thiserror.workspace = true
+url.workspace = true

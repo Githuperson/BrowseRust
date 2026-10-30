@@ -10,6 +10,7 @@ members = [
     "crates/browser-security",
     "crates/browser-engine",
     "crates/browser-app",
+    "crates/browser-storage",
     "crates/servo-integration",
 ]
 
@@ -38,6 +39,7 @@ browser-session = { path = "crates/browser-session" }
 browser-security = { path = "crates/browser-security" }
 browser-engine = { path = "crates/browser-engine" }
 browser-app = { path = "crates/browser-app" }
+browser-storage = { path = "crates/browser-storage" }
 servo-integration = { path = "crates/servo-integration" }
 
 [profile.release]
